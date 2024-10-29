@@ -1,0 +1,9 @@
+# *
+User-agent: *
+Allow: /
+
+# Host
+Host: https://rive.rip
+
+# Sitemaps
+Sitemap: https://rive.rip/sitemap.xml
