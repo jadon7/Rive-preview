@@ -11,9 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Toaster, toast } from "sonner";
 
 import { Upload } from 'lucide-react';
-import { LaptopIcon } from '@radix-ui/react-icons';
 import { Button } from '@/components/ui/button';
-import { ArrowRight } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 
 import { sendGAEvent } from '@next/third-parties/google'
@@ -711,10 +709,6 @@ export default function Home() {
                 </section>
             </div>
         );
-    }
-
-    const component_footer = () => {
-        return null;
     }
 
     return (

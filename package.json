@@ -4,10 +4,11 @@
     "private": true,
     "scripts": {
         "dev": "next dev",
-        "build": "next build",
+        "build": "next build && next-sitemap",
         "start": "next start",
         "lint": "next lint",
-        "postbuild": "next-sitemap"
+        "postbuild": "next-sitemap",
+        "export": "next export"
     },
     "dependencies": {
         "@next/third-parties": "^14.2.10",
