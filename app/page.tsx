@@ -713,7 +713,7 @@ export default function Home() {
 
     return (
         <>
-        <main className="flex-1 font-[family-name:var(--font-geist-sans)]">
+        <main className="flex-1">
             <Toaster richColors visibleToasts={10}/>
             <div id='container' className="px-8 max-w-[1400px] mx-auto">
                 { component_header() }

@@ -44,6 +44,7 @@ export function customMetadataGenerator({
         title: fullTitle,
         description,
         keywords: keywords.join(', '),
+        metadataBase: new URL('https://rive.rip'),
         openGraph: {
             title: fullTitle,
             description,
