@@ -1,7 +1,7 @@
 "use client";
 
-import { DragEvent, useState, useRef, useEffect } from 'react';
-import { Rive, Layout, EventType, Fit, Alignment, StateMachineInputType, StateMachineInput } from '@rive-app/react-canvas';
+import { DragEvent, useState, useRef, useEffect, useCallback } from 'react';
+import { Rive, Layout, EventType, Fit, Alignment, StateMachineInputType, StateMachineInput } from '@rive-app/react-webgl2';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue, } from "@/components/ui/select"
@@ -15,6 +15,12 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 
 import { sendGAEvent } from '@next/third-parties/google'
+import {
+    buildBindingTree,
+    watchViewModelInstance,
+    applyBindingChange,
+} from '@/lib/rive-data-binding';
+import type { ViewModelBindingNode } from '@/lib/rive-data-binding';
 
 const fitValues: (keyof typeof Fit)[] = [
     'Cover',
@@ -96,6 +102,8 @@ export default function Home() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const previewRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    const viewModelWatcherRef = useRef<null | (() => void)>(null);
+    const dataBindingsRef = useRef<ViewModelBindingNode[]>([]);
 
     const [status, setStatus] = useState<Status>({ current: PlayerState.Idle, hovering: false });
     const [filename, setFilename] = useState<string | null>(null);
@@ -114,70 +122,39 @@ export default function Home() {
         alignment: alignValues.indexOf('Center'),
         fit: fitValues.indexOf('Contain'),
     });
-    
-    useEffect(() => {
-        if (!riveAnimation) return;
+    const [dataBindings, setDataBindings] = useState<ViewModelBindingNode[]>([]);
 
-        const handleLoad = () => {
-            getStateMachineList();
-            getAnimationList();
-            setStatus({ current: PlayerState.Active, error: null });
-            setControllerState("state-machines");
+    const refreshDataBindings = useCallback(() => {
+        viewModelWatcherRef.current?.();
+        viewModelWatcherRef.current = null;
 
-            // 获取并设置状态机的输入
-            if (riveAnimation) {
-                const stateMachines = riveAnimation.stateMachineNames;
-                if (stateMachines && stateMachines.length > 0) {
-                    const firstStateMachine = stateMachines[0];
-                    // 先停止所有动画
-                    riveAnimation.stop();
-                    // 播放状态机
-                    riveAnimation.play(firstStateMachine);
-                    // 获取并设置状态机的输入
-                    const inputs = riveAnimation.stateMachineInputs(firstStateMachine);
-                    if (inputs) {
-                        setStateMachineInputs(inputs);
-                        console.log('State machine inputs:', inputs); // 添加日志
-                    }
-                }
-            }
-        };
+        if (!riveAnimation) {
+            setDataBindings([]);
+            return;
+        }
 
-        const handleLoadError = () => {
-            setStatus({ current: PlayerState.Error, error: PlayerError.NoAnimation });
-        };
+        const instance = riveAnimation.viewModelInstance;
+        if (!instance) {
+            setDataBindings([]);
+            return;
+        }
 
-        const handlePlay = () => setIsPlaying(true);
-        const handlePause = () => setIsPlaying(false);
-        const handleStop = () => setIsPlaying(false);
-
-        riveAnimation.on(EventType.Load, handleLoad);
-        riveAnimation.on(EventType.LoadError, handleLoadError);
-        riveAnimation.on(EventType.Play, handlePlay);
-        riveAnimation.on(EventType.Pause, handlePause);
-        riveAnimation.on(EventType.Stop, handleStop);
-
-        return () => {
-            if (riveAnimation) {
-                riveAnimation.off(EventType.Load, handleLoad);
-                riveAnimation.off(EventType.LoadError, handleLoadError);
-                riveAnimation.off(EventType.Play, handlePlay);
-                riveAnimation.off(EventType.Pause, handlePause);
-                riveAnimation.off(EventType.Stop, handleStop);
-            }
-        };
+        setDataBindings(buildBindingTree(instance));
+        viewModelWatcherRef.current = watchViewModelInstance(instance, (change) => {
+            setDataBindings((current) => applyBindingChange(current, change));
+        });
     }, [riveAnimation]);
 
     useEffect(() => {
-        if (status.current === PlayerState.Error && status.error !== null) {
-            reset();
-            fireErrorToast();
-        } else {
-            if (status.current === PlayerState.Active && !animationList) { getAnimationList(); }
-            if (status.current === PlayerState.Active && !stateMachineList) { getStateMachineList(); }
-        }
-    }, [status]);
+        dataBindingsRef.current = dataBindings;
+    }, [dataBindings]);
 
+    useEffect(() => {
+        return () => {
+            viewModelWatcherRef.current?.();
+            viewModelWatcherRef.current = null;
+        };
+    }, []);
     useEffect(() => {
         if (riveAnimation) {
             riveAnimation.layout = new Layout({
@@ -185,7 +162,7 @@ export default function Home() {
                 alignment: getAlignmentValue(alignFitIndex),
             });
         }
-    }, [alignFitIndex]);
+    }, [alignFitIndex, riveAnimation]);
 
     useEffect(() => {
         if (canvasRef.current && dimensions && riveAnimation) {
@@ -200,17 +177,24 @@ export default function Home() {
         }
     }, [dimensions, riveAnimation]);
 
+    const updateDimensions = useCallback(() => {
+        const targetDimensions = previewRef.current?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
+        setDimensions((current) => {
+            if (targetDimensions.width === current.width && targetDimensions.height === current.height) {
+                return current;
+            }
+            return {
+                width: targetDimensions.width,
+                height: targetDimensions.height,
+            };
+        });
+    }, []);
+
     useEffect(() => {
         updateDimensions();
         window.addEventListener('resize', updateDimensions);
         return () => window.removeEventListener('resize', updateDimensions);
-    }, []);
-
-    const updateDimensions = () => {
-        const targetDimensions = previewRef.current?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
-        if (targetDimensions.width === dimensions.width && targetDimensions.height === dimensions.height) return;
-        setDimensions({ width: targetDimensions.width, height: targetDimensions.height });
-    };
+    }, [updateDimensions]);
 
     const togglePlayback = () => {
         const active = animationList?.active;
@@ -230,6 +214,7 @@ export default function Home() {
                 await riveAnimation.load({
                     buffer: buffer as ArrayBuffer,
                     autoplay: false,
+                    autoBind: true,
                 });
                 return;
             }
@@ -238,6 +223,7 @@ export default function Home() {
                 buffer: buffer as ArrayBuffer,
                 canvas: canvasRef.current!,
                 autoplay: false,
+                autoBind: true,
                 stateMachines: "state-machines",
                 layout: new Layout({
                     fit: getFitValue(alignFitIndex),
@@ -290,77 +276,84 @@ export default function Home() {
         else return (bytes / 1048576).toFixed(1) + ' MB';
     };
 
+    const clearCanvas = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) {
+            return;
+        }
+        riveAnimation?.stop();
+        const ctx = canvas.getContext('2d', { alpha: false });
+        ctx!.clearRect(0, 0, canvas.width, canvas.height);
+    }, [riveAnimation]);
 
-    const reset = () => {
+    const reset = useCallback(() => {
         setIsPlaying(true);
         setFilename(null);
         setRiveAnimation(null);
         setAnimationList(null);
         setStateMachineList(null);
-        setStatus({ ...status, current: PlayerState.Idle });
+        setStatus((prev) => ({ ...prev, current: PlayerState.Idle }));
+        viewModelWatcherRef.current?.();
+        viewModelWatcherRef.current = null;
+        setDataBindings([]);
+        dataBindingsRef.current = [];
         clearCanvas();
-    };
+    }, [clearCanvas]);
 
-    const setControllerState = (state: string) => {
-        // check if state is valid
+    const setActiveAnimation = useCallback((animation: string) => {
+        if (!riveAnimation) return;
+        clearCanvas();
+        setAnimationList((prev) => {
+            if (!prev) return prev;
+            riveAnimation.stop(prev.active);
+            riveAnimation.play(animation);
+            return {
+                ...prev,
+                active: animation,
+            };
+        });
+    }, [clearCanvas, riveAnimation]);
+
+    const setActiveStateMachine = useCallback((stateMachine: string) => {
+        if (!riveAnimation) return;
+        
+        setStateMachineList((prev) => (prev ? {
+            ...prev,
+            active: stateMachine,
+        } : prev));
+
+        riveAnimation.stop();
+        riveAnimation.play(stateMachine);
+        const inputs = riveAnimation.stateMachineInputs(stateMachine);
+        if (inputs) {
+            setStateMachineInputs(inputs);
+            console.log('New state machine inputs:', inputs); // 添加日志
+        }
+    }, [riveAnimation]);
+
+    const setControllerState = useCallback((state: string) => {
         if (state !== "animations" && state !== "state-machines") return;
 
-        setController({
-            ...controller,
+        setController((prev) => ({
+            ...prev,
             active: state === "animations" ? "animations" : "state-machines",
-        });
+        }));
 
         if (state === "animations" && animationList) {
             setActiveAnimation(animationList.active);
         } else if (state === "state-machines" && stateMachineList) {
             setActiveStateMachine(stateMachineList.active);
         }
-    }
+    }, [animationList, setActiveAnimation, setActiveStateMachine, stateMachineList]);
 
-    const setActiveAnimation = (animation: string) => {
-        if (!riveAnimation) return;
-        if (!animationList) return;
-
-        clearCanvas();
-        if (riveAnimation) {
-            riveAnimation.stop(animationList?.active);
-            setAnimationList({
-                ...animationList,
-                active: animation,
-            });
-            riveAnimation.play(animation);
-        }
-    }
-
-    const setActiveStateMachine = (stateMachine: string) => {
-        if (!riveAnimation) return;
-        
-        // 更新状态机列表
-        setStateMachineList((prev) => ({
-            ...prev!,
-            active: stateMachine,
-        }));
-
-        // 停止所有动画
-        riveAnimation.stop();
-        // 播放新的状态机
-        riveAnimation.play(stateMachine);
-        // 获取并设置新状态机的输入
-        const inputs = riveAnimation.stateMachineInputs(stateMachine);
-        if (inputs) {
-            setStateMachineInputs(inputs);
-            console.log('New state machine inputs:', inputs); // 添加日志
-        }
-    }
-
-    const getAnimationList = () => {
+    const getAnimationList = useCallback(() => {
         const animations = riveAnimation?.animationNames;
         if (!animations) return;
 
         setAnimationList({ animations, active: animations[0] });
-    }
+    }, [riveAnimation]);
 
-    const getStateMachineList = () => {
+    const getStateMachineList = useCallback(() => {
         const stateMachines = riveAnimation?.stateMachineNames;
         if (!stateMachines || stateMachines.length === 0) return;
 
@@ -370,15 +363,71 @@ export default function Home() {
             active: firstStateMachine 
         });
         
-        // 立即激活第一个状态机
         if (riveAnimation) {
-            riveAnimation.stop(); // 停止所有动画
+            riveAnimation.stop();
             riveAnimation.play(firstStateMachine);
-            // 获取并设置状态机的输入
             const inputs = riveAnimation.stateMachineInputs(firstStateMachine);
             setStateMachineInputs(inputs);
         }
-    };
+    }, [riveAnimation]);
+
+    const handleRiveLoad = useCallback(() => {
+        getStateMachineList();
+        getAnimationList();
+        setStatus({ current: PlayerState.Active, error: null });
+        setControllerState("state-machines");
+        refreshDataBindings();
+
+        if (riveAnimation) {
+            const stateMachines = riveAnimation.stateMachineNames;
+            if (stateMachines && stateMachines.length > 0) {
+                const firstStateMachine = stateMachines[0];
+                riveAnimation.stop();
+                riveAnimation.play(firstStateMachine);
+                const inputs = riveAnimation.stateMachineInputs(firstStateMachine);
+                if (inputs) {
+                    setStateMachineInputs(inputs);
+                    console.log('State machine inputs:', inputs);
+                }
+            }
+        }
+    }, [getAnimationList, getStateMachineList, refreshDataBindings, riveAnimation, setControllerState]);
+
+    useEffect(() => {
+        if (!riveAnimation) return;
+
+        const handleLoadError = () => {
+            setStatus({ current: PlayerState.Error, error: PlayerError.NoAnimation });
+        };
+
+        const handlePlay = () => setIsPlaying(true);
+        const handlePause = () => setIsPlaying(false);
+        const handleStop = () => setIsPlaying(false);
+
+        riveAnimation.on(EventType.Load, handleRiveLoad);
+        riveAnimation.on(EventType.LoadError, handleLoadError);
+        riveAnimation.on(EventType.Play, handlePlay);
+        riveAnimation.on(EventType.Pause, handlePause);
+        riveAnimation.on(EventType.Stop, handleStop);
+
+        return () => {
+            riveAnimation.off(EventType.Load, handleRiveLoad);
+            riveAnimation.off(EventType.LoadError, handleLoadError);
+            riveAnimation.off(EventType.Play, handlePlay);
+            riveAnimation.off(EventType.Pause, handlePause);
+            riveAnimation.off(EventType.Stop, handleStop);
+        };
+    }, [riveAnimation, handleRiveLoad]);
+
+    useEffect(() => {
+        if (status.current === PlayerState.Error && status.error !== null) {
+            reset();
+            fireErrorToast();
+        } else {
+            if (status.current === PlayerState.Active && !animationList) { getAnimationList(); }
+            if (status.current === PlayerState.Active && !stateMachineList) { getStateMachineList(); }
+        }
+    }, [status, animationList, getAnimationList, getStateMachineList, reset, stateMachineList]);
 
     const getFitValue = (alignFitIndex: AlignFitIndex) => {
         return Fit[fitValues[alignFitIndex.fit]];
@@ -412,16 +461,6 @@ export default function Home() {
         load(e.dataTransfer.files[0]);
         e.preventDefault();
         e.stopPropagation();
-    };
-
-    const clearCanvas = () => {
-        const canvas = canvasRef.current;
-        if (!canvas) {
-            return;
-        }
-        riveAnimation?.stop();
-        const ctx = canvas.getContext('2d', { alpha: false });
-        ctx!.clearRect(0, 0, canvas.width, canvas.height);
     };
 
     const shouldDisplayCanvas = () => [PlayerState.Active, PlayerState.Loading].includes(status.current);
