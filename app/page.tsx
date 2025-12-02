@@ -19,22 +19,34 @@ import {
     buildBindingTree,
     watchViewModelInstance,
     applyBindingChange,
-    setBindingValueOnInstance,
-    DATA_TYPES_ENUM,
+    setBindingValueOnNode,
     isPrimitiveType,
 } from '@/lib/rive-data-binding';
 import type { ViewModelBindingNode, PrimitiveBindingValue } from '@/lib/rive-data-binding';
 
-const formatColorHex = (value: PrimitiveBindingValue) => {
+const normalizeColorHex = (value: PrimitiveBindingValue) => {
     if (typeof value === 'number') {
-        const hex = value.toString(16).padStart(8, '0');
-        return `#${hex.slice(-6)}`;
+        const rgb = value & 0xffffff;
+        return `#${rgb.toString(16).padStart(6, '0')}`;
+    }
+    if (typeof value === 'string' && /^#([0-9a-f]{6}|[0-9a-f]{3})$/i.test(value)) {
+        return value.length === 4
+            ? `#${value[1]}${value[1]}${value[2]}${value[2]}${value[3]}${value[3]}`
+            : value.toLowerCase();
     }
     return '#000000';
 };
 
+const formatColorHex = normalizeColorHex;
+
 const parseHexColor = (hex: string): number | null => {
-    const normalized = hex.replace('#', '');
+    let normalized = hex.replace('#', '').toLowerCase();
+    if (normalized.length === 3) {
+        normalized = normalized
+            .split('')
+            .map((char) => char + char)
+            .join('');
+    }
     if (normalized.length === 6) {
         return parseInt(`ff${normalized}`, 16);
     }
@@ -167,12 +179,18 @@ export default function Home() {
         }
 
         const tree = buildBindingTree(instance);
+        if (tree.length === 0) {
+            console.warn('[DataBinding] bound view model has no exposed properties', {
+                properties: instance.properties?.map((property) => ({ name: property.name, type: property.type })),
+                selectedViewModel,
+            });
+        }
         console.log('[DataBinding] binding tree rebuilt', { nodes: tree.length });
         setDataBindings(tree);
         viewModelWatcherRef.current = watchViewModelInstance(instance, (change) => {
             setDataBindings((current) => applyBindingChange(current, change));
         });
-    }, [riveAnimation]);
+    }, [riveAnimation, selectedViewModel]);
 
     useEffect(() => {
         dataBindingsRef.current = dataBindings;
@@ -237,7 +255,7 @@ export default function Home() {
         if (!buffer) return;
 
         setStatus({ current: PlayerState.Loading });
-        
+
         try {
             if (riveAnimation) {
                 await riveAnimation.load({
@@ -261,7 +279,7 @@ export default function Home() {
                 onLoad: () => {
                     // 先设置状态为 Active
                     setStatus({ current: PlayerState.Active });
-                    
+
                     // 等待下一个事件循环再设置状态机
                     setTimeout(() => {
                         const stateMachines = newRiveAnimation.stateMachineNames;
@@ -270,8 +288,8 @@ export default function Home() {
                             // 获取状态机的输入
                             const inputs = newRiveAnimation.stateMachineInputs(firstStateMachine);
                             if (inputs) {
-        setStateMachineInputs(inputs);
-        console.log('[StateMachine] active inputs', inputs);
+                                setStateMachineInputs(inputs);
+                                console.log('[StateMachine] active inputs', inputs);
                                 console.log('Initial state machine inputs:', inputs);
                                 // 播放状态机
                                 newRiveAnimation.play(firstStateMachine);
@@ -290,7 +308,7 @@ export default function Home() {
     const load = async (file: File) => {
         setFilename(file.name);
         setFileSize(formatFileSize(file.size));
-        
+
         const reader = new FileReader();
         reader.onload = async () => {
             await setAnimationWithBuffer(reader.result);
@@ -347,7 +365,7 @@ export default function Home() {
 
     const setActiveStateMachine = useCallback((stateMachine: string) => {
         if (!riveAnimation) return;
-        
+
         setStateMachineList((prev) => (prev ? {
             ...prev,
             active: stateMachine,
@@ -433,11 +451,11 @@ export default function Home() {
         if (!stateMachines || stateMachines.length === 0) return;
 
         const firstStateMachine = stateMachines[0];
-        setStateMachineList({ 
-            stateMachines, 
-            active: firstStateMachine 
+        setStateMachineList({
+            stateMachines,
+            active: firstStateMachine
         });
-        
+
         if (riveAnimation) {
             riveAnimation.stop();
             riveAnimation.play(firstStateMachine);
@@ -446,7 +464,7 @@ export default function Home() {
         }
     }, [riveAnimation]);
 
-    useEffect(() => {
+    const updateViewModelOptions = useCallback(() => {
         if (!riveAnimation) {
             setViewModelOptions([]);
             setSelectedViewModel(null);
@@ -467,9 +485,9 @@ export default function Home() {
         if (!riveAnimation.viewModelInstance) {
             if (names.length > 0) {
                 bindViewModelByName(names[0]);
-                return;
+            } else {
+                bindDefaultViewModel();
             }
-            bindDefaultViewModel();
             return;
         }
 
@@ -486,8 +504,13 @@ export default function Home() {
         const instance = riveAnimation.viewModelInstance;
         if (!instance) return;
 
-        if (node.type === DATA_TYPES_ENUM.trigger) {
-            const success = setBindingValueOnInstance(instance, node.path, node.type, null);
+        if (!node.targetInstance || !node.propertyName) {
+            console.warn('[DataBinding] node missing target', node);
+            return;
+        }
+
+        if (node.type === 'trigger') {
+            const success = setBindingValueOnNode(node, null);
             if (success) {
                 setDataBindings((current) => applyBindingChange(current, {
                     path: node.path,
@@ -503,14 +526,14 @@ export default function Home() {
 
         let nextValue: PrimitiveBindingValue = rawValue as PrimitiveBindingValue;
 
-        if (node.type === DATA_TYPES_ENUM.color && typeof rawValue === 'string') {
+        if (node.type === 'color' && typeof rawValue === 'string') {
             const parsed = parseHexColor(rawValue);
             if (parsed === null) {
                 console.warn('[DataBinding] invalid color hex', rawValue);
                 return;
             }
             nextValue = parsed;
-        } else if (node.type === DATA_TYPES_ENUM.number && typeof rawValue === 'string') {
+        } else if (node.type === 'number' && typeof rawValue === 'string') {
             const parsedNumber = Number(rawValue);
             if (Number.isNaN(parsedNumber)) {
                 console.warn('[DataBinding] invalid number input', rawValue);
@@ -519,7 +542,7 @@ export default function Home() {
             nextValue = parsedNumber;
         }
 
-        const success = setBindingValueOnInstance(instance, node.path, node.type, nextValue);
+        const success = setBindingValueOnNode(node, nextValue);
         if (success) {
             setDataBindings((current) => applyBindingChange(current, {
                 path: node.path,
@@ -534,7 +557,7 @@ export default function Home() {
 
     const renderBindingInput = (node: ViewModelBindingNode) => {
         switch (node.type) {
-            case DATA_TYPES_ENUM.string:
+            case 'string':
                 return (
                     <Input
                         className="w-40"
@@ -542,7 +565,7 @@ export default function Home() {
                         onChange={(e) => handleBindingValueChange(node, e.target.value)}
                     />
                 );
-            case DATA_TYPES_ENUM.number:
+            case 'number':
                 return (
                     <Input
                         className="w-32"
@@ -551,14 +574,14 @@ export default function Home() {
                         onChange={(e) => handleBindingValueChange(node, e.target.value)}
                     />
                 );
-            case DATA_TYPES_ENUM.boolean:
+            case 'boolean':
                 return (
                     <Switch
                         checked={Boolean(node.value)}
                         onCheckedChange={(checked) => handleBindingValueChange(node, checked)}
                     />
                 );
-            case DATA_TYPES_ENUM.color:
+            case 'color':
                 return (
                     <Input
                         type="color"
@@ -567,7 +590,7 @@ export default function Home() {
                         onChange={(e) => handleBindingValueChange(node, e.target.value)}
                     />
                 );
-            case DATA_TYPES_ENUM.enumType:
+            case 'enumType':
                 return (
                     <Select
                         value={typeof node.value === 'string' ? node.value : undefined}
@@ -585,7 +608,7 @@ export default function Home() {
                         </SelectContent>
                     </Select>
                 );
-            case DATA_TYPES_ENUM.trigger:
+            case 'trigger':
                 return (
                     <Button size="xs" variant="outline" onClick={() => handleBindingValueChange(node, null)}>
                         触发
@@ -604,8 +627,7 @@ export default function Home() {
                 <div key={node.path} className="flex flex-col gap-2">
                     <div className="flex w-full items-center gap-2" style={{ paddingLeft: `${depth * 12}px` }}>
                         <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium truncate" title={node.name}>{node.name}</p>
-                            <p className="text-xs text-muted-foreground break-all">{node.path}</p>
+                            <p className="text-sm font-medium truncate break-all" title={node.path}>{node.name}</p>
                         </div>
                         {isEditable ? (
                             renderBindingInput(node)
@@ -629,6 +651,7 @@ export default function Home() {
         setStatus({ current: PlayerState.Active, error: null });
         setControllerState("state-machines");
         refreshDataBindings();
+        updateViewModelOptions();
 
         if (riveAnimation) {
             const stateMachines = riveAnimation.stateMachineNames;
@@ -643,7 +666,7 @@ export default function Home() {
                 }
             }
         }
-    }, [getAnimationList, getStateMachineList, refreshDataBindings, riveAnimation, setControllerState]);
+    }, [getAnimationList, getStateMachineList, refreshDataBindings, riveAnimation, setControllerState, updateViewModelOptions]);
 
     useEffect(() => {
         if (!riveAnimation) return;
@@ -724,7 +747,7 @@ export default function Home() {
     const component_prompt = () => {
         return (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4" style={{ display: shouldDisplayCanvas() ? 'none' : 'flex' }}>
-                <Upload className="w-8 h-8"/>
+                <Upload className="w-8 h-8" />
                 拖拽一个 Rive 文件或
                 <Button onClick={() => inputRef.current?.click()} >
                     浏览
@@ -754,7 +777,7 @@ export default function Home() {
                     <CardDescription>数据源和触发器</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-4">
-                    <Tabs 
+                    <Tabs
                         value={controller.active}
                         className="w-full flex flex-col items-center"
                         onValueChange={(value) => setControllerState(value)}
@@ -781,7 +804,7 @@ export default function Home() {
                                 </ul>
                             </div>
                         </TabsContent>
-                        <TabsContent value="state-machines" className="w-full flex flex-col items-center">
+                        <TabsContent value="state-machines" className="w-full">
                             <Select
                                 value={stateMachineList?.active}
                                 onValueChange={(value) => setActiveStateMachine(value)}
@@ -802,7 +825,7 @@ export default function Home() {
                                 {/* first show the number inputs */}
                                 {stateMachineInputs?.some((input) => input.type === StateMachineInputType.Number) && (
                                     <>
-                                        <h2 className="text-lg font-medium mb-2">数据源</h2>
+                                        <h2 className="text-lg font-medium mb-2">Input</h2>
                                         <ul className="flex flex-col gap-2 w-full">
                                             {stateMachineInputs?.filter((input) => input.type === StateMachineInputType.Number).map((input, index) => (
                                                 <li key={index} className="w-full">
@@ -810,10 +833,10 @@ export default function Home() {
                                                         <Label htmlFor={input.name}>
                                                             {input.name}
                                                         </Label>
-                                                        <Input 
-                                                            type="number" 
+                                                        <Input
+                                                            type="number"
                                                             id={input.name}
-                                                            placeholder="" 
+                                                            placeholder=""
                                                             // value={input.value as number}
                                                             onChange={(e) => {
                                                                 const newValue = parseFloat(e.target.value);
@@ -838,7 +861,7 @@ export default function Home() {
                                                 <li key={index} className="w-full">
                                                     <Button
                                                         variant="default"
-                                                        onClick={() => { 
+                                                        onClick={() => {
                                                             console.log('input: ', input);
                                                             input.fire();
                                                         }}
@@ -861,8 +884,8 @@ export default function Home() {
                                             {stateMachineInputs?.filter((input) => input.type === StateMachineInputType.Boolean).map((input, index) => (
                                                 <li key={index} className="w-full">
                                                     <div className="flex items-center space-x-2">
-                                                        <Switch 
-                                                            id={input.name} 
+                                                        <Switch
+                                                            id={input.name}
                                                             // checked={input.value as boolean}
                                                             onCheckedChange={(value) => {
                                                                 console.log('Boolean input: ', input.name, ' New value: ', value);
@@ -881,50 +904,49 @@ export default function Home() {
                                 <div className="w-full mt-4 flex flex-col gap-2">
                                     <Separator className="my-2" />
                                     <div className="flex flex-col w-full gap-1">
-                                        <h4 className="text-sm font-semibold">数据绑定</h4>
-                                        <p className="text-xs text-muted-foreground">实时调整 ViewModel 的数据源。</p>
+                                        <h4 className="text-lg font-medium mb-2">Data Binding</h4>
                                     </div>
                                     <div className="flex flex-col gap-1">
-                        <Label className="text-xs text-muted-foreground">ViewModel</Label>
-                        {viewModelOptions.length > 0 ? (
-                            <Select
-                                value={selectedViewModel ?? viewModelOptions[0]}
-                                onValueChange={(value) => bindViewModelByName(value)}
-                            >
-                                <SelectTrigger className="w-full">
-                                    <SelectValue placeholder="选择 ViewModel" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {viewModelOptions.map((option) => (
-                                        <SelectItem key={option} value={option}>
-                                            {option}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        ) : (
-                            <div className="flex gap-2 w-full">
-                                <Input
-                                    placeholder="输入 ViewModel 名称"
-                                    value={manualViewModelInput}
-                                    onChange={(e) => setManualViewModelInput(e.target.value)}
-                                />
-                                <Button
-                                    type="button"
-                                    onClick={() => bindViewModelByName(manualViewModelInput.trim())}
-                                    disabled={!manualViewModelInput.trim()}
-                                >
-                                    绑定
-                                </Button>
-                            </div>
-                        )}
-                        {viewModelOptions.length === 0 && (
-                            <p className="text-xs text-muted-foreground">
-                                文件未提供默认 ViewModel，请在 Rive 中设置 Default Instance 后再试。
-                            </p>
-                        )}
-                    </div>
-                                    <div className="flex flex-col w-full gap-3">
+                                        <Label className="text-xs text-muted-foreground">ViewModel</Label>
+                                        {viewModelOptions.length > 0 ? (
+                                            <Select
+                                                value={selectedViewModel ?? viewModelOptions[0]}
+                                                onValueChange={(value) => bindViewModelByName(value)}
+                                            >
+                                                <SelectTrigger className="w-full">
+                                                    <SelectValue placeholder="选择 ViewModel" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {viewModelOptions.map((option) => (
+                                                        <SelectItem key={option} value={option}>
+                                                            {option}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        ) : (
+                                            <div className="flex gap-2 w-full">
+                                                <Input
+                                                    placeholder="输入 ViewModel 名称"
+                                                    value={manualViewModelInput}
+                                                    onChange={(e) => setManualViewModelInput(e.target.value)}
+                                                />
+                                                <Button
+                                                    type="button"
+                                                    onClick={() => bindViewModelByName(manualViewModelInput.trim())}
+                                                    disabled={!manualViewModelInput.trim()}
+                                                >
+                                                    绑定
+                                                </Button>
+                                            </div>
+                                        )}
+                                        {viewModelOptions.length === 0 && (
+                                            <p className="text-xs text-muted-foreground">
+                                                文件未提供默认 ViewModel，请在 Rive 中设置 Default Instance 后再试。
+                                            </p>
+                                        )}
+                                    </div>
+                                    <div className="flex flex-col w-full gap-3 -mr-6">
                                         {renderBindingTree(dataBindings)}
                                     </div>
                                 </div>
@@ -1056,50 +1078,50 @@ export default function Home() {
 
     return (
         <>
-        <main className="flex-1">
-            <Toaster richColors visibleToasts={10}/>
-            <div id='container' className="px-8 max-w-[1400px] mx-auto">
-                { component_header() }
-                <div className="grid grid-cols-[1fr_300px] gap-4">
-                    <div className="flex flex-col gap-4">
-                        <Card>
-                            <CardHeader>
-                                <CardTitle>预览</CardTitle>
-                                <CardDescription>
-                                    {filename ? (
-                                        <span>
-                                            {filename}
-                                            <span className="inline-block min-w-2">&nbsp;</span>
-                                            <span className="text-muted-foreground">({fileSize})</span>
-                                        </span>
-                                    ) : (
-                                        '选择文件开始预览'
-                                    )}
-                                </CardDescription>
-                            </CardHeader>
-                            <CardContent>
-                                <div
-                                    ref={previewRef}
-                                    className="relative w-full h-[600px] rounded-lg overflow-hidden"
-                                    onDrop={(e) => handleDrop(e)}
-                                    onDragOver={(e) => handleDragOver(e)}
-                                    onDragEnter={(e) => handleDragEnter(e)}
-                                    onDragLeave={(e) => handleDragLeave(e)}
-                                >
-                                    { component_canvas() }
-                                    { component_prompt() }
-                                </div>
-                            </CardContent>
-                        </Card>
-                        <div className="grid grid-cols-2 gap-4">
-                            { component_appearanceCard() }
-                            { component_layoutCard() }
+            <main className="flex-1">
+                <Toaster richColors visibleToasts={10} />
+                <div id='container' className="px-8 max-w-[1400px] mx-auto">
+                    {component_header()}
+                    <div className="grid grid-cols-[1fr_300px] gap-4">
+                        <div className="flex flex-col gap-4">
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle>预览</CardTitle>
+                                    <CardDescription>
+                                        {filename ? (
+                                            <span>
+                                                {filename}
+                                                <span className="inline-block min-w-2">&nbsp;</span>
+                                                <span className="text-muted-foreground">({fileSize})</span>
+                                            </span>
+                                        ) : (
+                                            '选择文件开始预览'
+                                        )}
+                                    </CardDescription>
+                                </CardHeader>
+                                <CardContent>
+                                    <div
+                                        ref={previewRef}
+                                        className="relative w-full h-[600px] rounded-lg overflow-hidden"
+                                        onDrop={(e) => handleDrop(e)}
+                                        onDragOver={(e) => handleDragOver(e)}
+                                        onDragEnter={(e) => handleDragEnter(e)}
+                                        onDragLeave={(e) => handleDragLeave(e)}
+                                    >
+                                        {component_canvas()}
+                                        {component_prompt()}
+                                    </div>
+                                </CardContent>
+                            </Card>
+                            <div className="grid grid-cols-2 gap-4">
+                                {component_appearanceCard()}
+                                {component_layoutCard()}
+                            </div>
                         </div>
+                        {component_controlsCard()}
                     </div>
-                    { component_controlsCard() }
                 </div>
-            </div>
-        </main>
+            </main>
         </>
     );
 }

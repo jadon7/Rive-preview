@@ -2,7 +2,7 @@ import type {
     ViewModelInstance,
     ViewModelInstanceList,
 } from '@rive-app/webgl2';
-type ViewModelProperty = { name: string; type: RiveDataType };
+type ViewModelProperty = { name: string; type: RiveDataType | string };
 type RiveDataType = number;
 
 const DATA_TYPES = {
@@ -17,36 +17,43 @@ const DATA_TYPES = {
     viewModel: 8,
 } as const;
 
+type DataTypeKey = keyof typeof DATA_TYPES;
+
 export type PrimitiveBindingValue = string | number | boolean | null;
 
 export interface ViewModelBindingNode {
     path: string;
     name: string;
-    type: RiveDataType;
+    type: DataTypeKey;
     value?: PrimitiveBindingValue;
     enumValues?: string[];
     children?: ViewModelBindingNode[];
+    targetInstance?: ViewModelInstance;
+    propertyName?: string;
 }
 
 export interface BindingChange {
     path: string;
-    type: RiveDataType;
+    type: DataTypeKey;
     value: PrimitiveBindingValue;
 }
 
-const primitiveTypes = new Set<RiveDataType>([
-    DATA_TYPES.boolean,
-    DATA_TYPES.color,
-    DATA_TYPES.enumType,
-    DATA_TYPES.number,
-    DATA_TYPES.string,
-    DATA_TYPES.trigger,
-]);
+const primitiveTypes = new Set<DataTypeKey>(['boolean', 'color', 'enumType', 'number', 'string', 'trigger']);
 
-const childTypes = new Set<RiveDataType>([DATA_TYPES.list, DATA_TYPES.viewModel]);
+const childTypes = new Set<DataTypeKey>(['list', 'viewModel']);
 
-export const DATA_TYPES_ENUM = DATA_TYPES;
-export const isPrimitiveType = (type: RiveDataType) => primitiveTypes.has(type);
+export const DATA_TYPE_KEYS = DATA_TYPES;
+export const isPrimitiveType = (type: DataTypeKey) => primitiveTypes.has(type);
+
+const resolveTypeKey = (type: RiveDataType | string): DataTypeKey | undefined => {
+    if (typeof type === 'string') {
+        if (type in DATA_TYPES) {
+            return type as DataTypeKey;
+        }
+        return undefined;
+    }
+    return Object.entries(DATA_TYPES).find(([, value]) => value === type)?.[0] as DataTypeKey | undefined;
+};
 
 const getPropertyPath = (prefix: string, name: string) => (prefix ? `${prefix}/${name}` : name);
 
@@ -60,86 +67,45 @@ const traverseBindingTree = (instance: ViewModelInstance, prefix: string): ViewM
 
     const nodes = properties.flatMap((property): ViewModelBindingNode[] => {
         const path = getPropertyPath(prefix, property.name);
-        switch (property.type) {
-            case DATA_TYPES.string: {
+        const typeKey = resolveTypeKey(property.type);
+        if (!typeKey) {
+            console.warn('[DataBinding] unsupported property type', property);
+            return [];
+        }
+        switch (typeKey) {
+            case 'string': {
                 const ref = instance.string(property.name);
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    value: ref?.value ?? null,
-                }];
+                return [{ path, name: property.name, type: typeKey, value: ref?.value ?? null, targetInstance: instance, propertyName: property.name }];
             }
-            case DATA_TYPES.number: {
+            case 'number': {
                 const ref = instance.number(property.name);
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    value: ref?.value ?? null,
-                }];
+                return [{ path, name: property.name, type: typeKey, value: ref?.value ?? null, targetInstance: instance, propertyName: property.name }];
             }
-            case DATA_TYPES.boolean: {
+            case 'boolean': {
                 const ref = instance.boolean(property.name);
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    value: ref?.value ?? null,
-                }];
+                return [{ path, name: property.name, type: typeKey, value: ref?.value ?? null, targetInstance: instance, propertyName: property.name }];
             }
-            case DATA_TYPES.color: {
+            case 'color': {
                 const ref = instance.color(property.name);
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    value: ref?.value ?? null,
-                }];
+                return [{ path, name: property.name, type: typeKey, value: ref?.value ?? null, targetInstance: instance, propertyName: property.name }];
             }
-            case DATA_TYPES.enumType: {
+            case 'enumType': {
                 const ref = instance.enum(property.name);
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    value: ref?.value ?? null,
-                    enumValues: ref?.values ?? [],
-                }];
+                return [{ path, name: property.name, type: typeKey, value: ref?.value ?? null, enumValues: ref?.values ?? [], targetInstance: instance, propertyName: property.name }];
             }
-            case DATA_TYPES.trigger: {
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    value: null,
-                }];
+            case 'trigger': {
+                return [{ path, name: property.name, type: typeKey, value: null, targetInstance: instance, propertyName: property.name }];
             }
-            case DATA_TYPES.viewModel: {
+            case 'viewModel': {
                 const child = instance.viewModel(property.name);
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    children: child ? traverseBindingTree(child, path) : [],
-                }];
+                return [{ path, name: property.name, type: typeKey, children: child ? traverseBindingTree(child, path) : [] }];
             }
-            case DATA_TYPES.list: {
+            case 'list': {
                 const list = instance.list(property.name);
                 if (!list) {
-                    return [{
-                        path,
-                        name: property.name,
-                        type: property.type,
-                        children: [],
-                    }];
+                    return [{ path, name: property.name, type: typeKey, children: [] }];
                 }
-                return [{
-                    path,
-                    name: property.name,
-                    type: property.type,
-                    children: buildListChildren(list, path),
-                }];
+                return [{ path, name: property.name, type: typeKey, children: buildListChildren(list, path) }];
             }
             default:
                 return [];
@@ -163,7 +129,7 @@ const buildListChildren = (
         items.push({
             path,
             name: `${prefix.split('/').pop() ?? 'item'}[${index}]`,
-            type: DATA_TYPES.viewModel,
+            type: 'viewModel',
             children: traverseBindingTree(instance, path),
         });
     }
@@ -182,14 +148,19 @@ export const watchViewModelInstance = (
         const properties: ViewModelProperty[] = scope.properties ?? [];
         properties.forEach((property) => {
             const path = getPropertyPath(prefix, property.name);
-            if (primitiveTypes.has(property.type)) {
-                const ref = getPropertyAccessor(scope, property);
+            const typeKey = resolveTypeKey(property.type);
+            if (!typeKey) {
+                console.warn('[DataBinding] skip watch: unsupported type', property);
+                return;
+            }
+            if (primitiveTypes.has(typeKey)) {
+                const ref = getPropertyAccessor(scope, property.name, typeKey);
                 if (!ref) return;
                 const handler = () => {
                     onChange({
                         path,
-                        type: property.type,
-                        value: readPrimitiveValue(property.type, ref),
+                        type: typeKey,
+                        value: readPrimitiveValue(typeKey, ref),
                     });
                 };
                 ref.on(handler);
@@ -197,11 +168,11 @@ export const watchViewModelInstance = (
                 return;
             }
 
-            if (childTypes.has(property.type)) {
-                if (property.type === DATA_TYPES.viewModel) {
+            if (childTypes.has(typeKey)) {
+                if (typeKey === 'viewModel') {
                     const child = scope.viewModel(property.name);
                     if (child) visit(child, path);
-                } else if (property.type === DATA_TYPES.list) {
+                } else if (typeKey === 'list') {
                     const list = scope.list(property.name);
                     if (list) {
                         const entryCount = list.length ?? 0;
@@ -226,28 +197,29 @@ export const watchViewModelInstance = (
 
 const getPropertyAccessor = (
     instance: ViewModelInstance,
-    property: ViewModelProperty,
+    propertyName: string,
+    type: DataTypeKey,
 ) => {
-    switch (property.type) {
-        case DATA_TYPES.string:
-            return instance.string(property.name);
-        case DATA_TYPES.number:
-            return instance.number(property.name);
-        case DATA_TYPES.boolean:
-            return instance.boolean(property.name);
-        case DATA_TYPES.color:
-            return instance.color(property.name);
-        case DATA_TYPES.enumType:
-            return instance.enum(property.name);
-        case DATA_TYPES.trigger:
-            return instance.trigger(property.name);
+    switch (type) {
+        case 'string':
+            return instance.string(propertyName);
+        case 'number':
+            return instance.number(propertyName);
+        case 'boolean':
+            return instance.boolean(propertyName);
+        case 'color':
+            return instance.color(propertyName);
+        case 'enumType':
+            return instance.enum(propertyName);
+        case 'trigger':
+            return instance.trigger(propertyName);
         default:
             return null;
     }
 };
 
 const readPrimitiveValue = (
-    type: RiveDataType,
+    type: DataTypeKey,
     accessor:
         | ReturnType<ViewModelInstance['string']>
         | ReturnType<ViewModelInstance['number']>
@@ -259,15 +231,15 @@ const readPrimitiveValue = (
 ): PrimitiveBindingValue => {
     if (!accessor) return null;
     switch (type) {
-        case DATA_TYPES.string:
-        case DATA_TYPES.enumType:
+        case 'string':
+        case 'enumType':
             return (accessor as ReturnType<ViewModelInstance['string']>)?.value ?? null;
-        case DATA_TYPES.number:
-        case DATA_TYPES.color:
+        case 'number':
+        case 'color':
             return (accessor as ReturnType<ViewModelInstance['number']>)?.value ?? null;
-        case DATA_TYPES.boolean:
+        case 'boolean':
             return (accessor as ReturnType<ViewModelInstance['boolean']>)?.value ?? null;
-        case DATA_TYPES.trigger:
+        case 'trigger':
             return Date.now();
         default:
             return null;
@@ -321,68 +293,6 @@ const updateNode = (
     return node;
 };
 
-const listSegmentPattern = /(.*)\[(\d+)\]$/;
-
-const resolveBindingTarget = (
-    instance: ViewModelInstance | null,
-    path: string,
-): { parent: ViewModelInstance; property: string } | null => {
-    if (!instance) return null;
-    const segments = path.split('/');
-    let current: ViewModelInstance | null = instance;
-
-    for (let i = 0; i < segments.length; i += 1) {
-        if (!current) return null;
-        const segment = segments[i];
-        const listMatch = segment.match(listSegmentPattern);
-        if (listMatch) {
-            const [, listName, indexStr] = listMatch;
-            const list = current.list(listName);
-            if (!list) return null;
-            const child = list.instanceAt(Number(indexStr));
-            if (!child) return null;
-            current = child;
-            continue;
-        }
-
-        const isLast = i === segments.length - 1;
-        if (isLast) {
-            return { parent: current, property: segment };
-        }
-
-        const childViewModel = current.viewModel(segment);
-        if (childViewModel) {
-            current = childViewModel;
-            continue;
-        }
-
-        return null;
-    }
-
-    return null;
-};
-
-const getAccessorByType = (
-    instance: ViewModelInstance,
-    property: string,
-    type: RiveDataType,
-) => {
-    switch (type) {
-        case DATA_TYPES.string:
-        case DATA_TYPES.enumType:
-            return instance.string(property);
-        case DATA_TYPES.number:
-        case DATA_TYPES.color:
-            return instance.number(property);
-        case DATA_TYPES.boolean:
-            return instance.boolean(property);
-        case DATA_TYPES.trigger:
-            return instance.trigger(property);
-        default:
-            return null;
-    }
-};
-
 const normalizeNumericValue = (value: PrimitiveBindingValue) => {
     if (typeof value === 'number') return value;
     if (typeof value === 'string' && value.trim().length > 0) {
@@ -392,39 +302,48 @@ const normalizeNumericValue = (value: PrimitiveBindingValue) => {
     return null;
 };
 
-export const setBindingValueOnInstance = (
-    instance: ViewModelInstance | null,
-    path: string,
-    type: RiveDataType,
+export const setBindingValueOnNode = (
+    node: ViewModelBindingNode,
     value: PrimitiveBindingValue,
 ): boolean => {
-    const target = resolveBindingTarget(instance, path);
-    if (!target) return false;
-    const accessor = getAccessorByType(target.parent, target.property, type);
-    if (!accessor) return false;
+    const { targetInstance, propertyName, type } = node;
+    if (!targetInstance || !propertyName) {
+        console.warn('[DataBinding] missing target instance for node', node.path);
+        return false;
+    }
+    const accessor = getPropertyAccessor(targetInstance, propertyName, type);
+    if (!accessor) {
+        console.warn('[DataBinding] unable to resolve accessor', node.path, type);
+        return false;
+    }
     const bindingAccessor = accessor;
 
     switch (type) {
-        case DATA_TYPES.string:
+        case 'string':
             (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['string']>>).value = typeof value === 'string' ? value : '';
             return true;
-        case DATA_TYPES.enumType:
+        case 'enumType':
             if (typeof value === 'string') {
                 (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['string']>>).value = value;
                 return true;
             }
             return false;
-        case DATA_TYPES.number:
-        case DATA_TYPES.color: {
+        case 'number': {
             const numeric = normalizeNumericValue(value);
             if (numeric === null) return false;
             (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['number']>>).value = numeric;
             return true;
         }
-        case DATA_TYPES.boolean:
+        case 'color': {
+            const numeric = normalizeNumericValue(value);
+            if (numeric === null) return false;
+            (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['color']>>).value = numeric;
+            return true;
+        }
+        case 'boolean':
             (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['boolean']>>).value = Boolean(value);
             return true;
-        case DATA_TYPES.trigger:
+        case 'trigger':
             (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['trigger']>>).trigger();
             return true;
         default:
