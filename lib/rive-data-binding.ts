@@ -45,6 +45,9 @@ const primitiveTypes = new Set<RiveDataType>([
 
 const childTypes = new Set<RiveDataType>([DATA_TYPES.list, DATA_TYPES.viewModel]);
 
+export const DATA_TYPES_ENUM = DATA_TYPES;
+export const isPrimitiveType = (type: RiveDataType) => primitiveTypes.has(type);
+
 const getPropertyPath = (prefix: string, name: string) => (prefix ? `${prefix}/${name}` : name);
 
 export const buildBindingTree = (instance: ViewModelInstance | null): ViewModelBindingNode[] => {
@@ -143,7 +146,7 @@ const traverseBindingTree = (instance: ViewModelInstance, prefix: string): ViewM
         }
     });
 
-    return nodes;;
+    return nodes;
 };
 
 const buildListChildren = (
@@ -316,4 +319,115 @@ const updateNode = (
     }
 
     return node;
+};
+
+const listSegmentPattern = /(.*)\[(\d+)\]$/;
+
+const resolveBindingTarget = (
+    instance: ViewModelInstance | null,
+    path: string,
+): { parent: ViewModelInstance; property: string } | null => {
+    if (!instance) return null;
+    const segments = path.split('/');
+    let current: ViewModelInstance | null = instance;
+
+    for (let i = 0; i < segments.length; i += 1) {
+        if (!current) return null;
+        const segment = segments[i];
+        const listMatch = segment.match(listSegmentPattern);
+        if (listMatch) {
+            const [, listName, indexStr] = listMatch;
+            const list = current.list(listName);
+            if (!list) return null;
+            const child = list.instanceAt(Number(indexStr));
+            if (!child) return null;
+            current = child;
+            continue;
+        }
+
+        const isLast = i === segments.length - 1;
+        if (isLast) {
+            return { parent: current, property: segment };
+        }
+
+        const childViewModel = current.viewModel(segment);
+        if (childViewModel) {
+            current = childViewModel;
+            continue;
+        }
+
+        return null;
+    }
+
+    return null;
+};
+
+const getAccessorByType = (
+    instance: ViewModelInstance,
+    property: string,
+    type: RiveDataType,
+) => {
+    switch (type) {
+        case DATA_TYPES.string:
+        case DATA_TYPES.enumType:
+            return instance.string(property);
+        case DATA_TYPES.number:
+        case DATA_TYPES.color:
+            return instance.number(property);
+        case DATA_TYPES.boolean:
+            return instance.boolean(property);
+        case DATA_TYPES.trigger:
+            return instance.trigger(property);
+        default:
+            return null;
+    }
+};
+
+const normalizeNumericValue = (value: PrimitiveBindingValue) => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && value.trim().length > 0) {
+        const parsed = Number(value);
+        if (!Number.isNaN(parsed)) return parsed;
+    }
+    return null;
+};
+
+export const setBindingValueOnInstance = (
+    instance: ViewModelInstance | null,
+    path: string,
+    type: RiveDataType,
+    value: PrimitiveBindingValue,
+): boolean => {
+    const target = resolveBindingTarget(instance, path);
+    if (!target) return false;
+    const accessor = getAccessorByType(target.parent, target.property, type);
+    if (!accessor) return false;
+    const bindingAccessor = accessor;
+
+    switch (type) {
+        case DATA_TYPES.string:
+            (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['string']>>).value = typeof value === 'string' ? value : '';
+            return true;
+        case DATA_TYPES.enumType:
+            if (typeof value === 'string') {
+                (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['string']>>).value = value;
+                return true;
+            }
+            return false;
+        case DATA_TYPES.number:
+        case DATA_TYPES.color: {
+            const numeric = normalizeNumericValue(value);
+            if (numeric === null) return false;
+            (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['number']>>).value = numeric;
+            return true;
+        }
+        case DATA_TYPES.boolean:
+            (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['boolean']>>).value = Boolean(value);
+            return true;
+        case DATA_TYPES.trigger:
+            (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['trigger']>>).trigger();
+            return true;
+        default:
+            return false;
+    }
 };

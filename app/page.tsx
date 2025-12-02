@@ -19,8 +19,30 @@ import {
     buildBindingTree,
     watchViewModelInstance,
     applyBindingChange,
+    setBindingValueOnInstance,
+    DATA_TYPES_ENUM,
+    isPrimitiveType,
 } from '@/lib/rive-data-binding';
-import type { ViewModelBindingNode } from '@/lib/rive-data-binding';
+import type { ViewModelBindingNode, PrimitiveBindingValue } from '@/lib/rive-data-binding';
+
+const formatColorHex = (value: PrimitiveBindingValue) => {
+    if (typeof value === 'number') {
+        const hex = value.toString(16).padStart(8, '0');
+        return `#${hex.slice(-6)}`;
+    }
+    return '#000000';
+};
+
+const parseHexColor = (hex: string): number | null => {
+    const normalized = hex.replace('#', '');
+    if (normalized.length === 6) {
+        return parseInt(`ff${normalized}`, 16);
+    }
+    if (normalized.length === 8) {
+        return parseInt(normalized, 16);
+    }
+    return null;
+};
 
 const fitValues: (keyof typeof Fit)[] = [
     'Cover',
@@ -123,23 +145,30 @@ export default function Home() {
         fit: fitValues.indexOf('Contain'),
     });
     const [dataBindings, setDataBindings] = useState<ViewModelBindingNode[]>([]);
+    const [viewModelOptions, setViewModelOptions] = useState<string[]>([]);
+    const [selectedViewModel, setSelectedViewModel] = useState<string | null>(null);
+    const [manualViewModelInput, setManualViewModelInput] = useState<string>('');
 
     const refreshDataBindings = useCallback(() => {
         viewModelWatcherRef.current?.();
         viewModelWatcherRef.current = null;
 
         if (!riveAnimation) {
+            console.warn('[DataBinding] refresh skipped: riveAnimation missing');
             setDataBindings([]);
             return;
         }
 
         const instance = riveAnimation.viewModelInstance;
         if (!instance) {
+            console.warn('[DataBinding] refresh skipped: viewModelInstance missing');
             setDataBindings([]);
             return;
         }
 
-        setDataBindings(buildBindingTree(instance));
+        const tree = buildBindingTree(instance);
+        console.log('[DataBinding] binding tree rebuilt', { nodes: tree.length });
+        setDataBindings(tree);
         viewModelWatcherRef.current = watchViewModelInstance(instance, (change) => {
             setDataBindings((current) => applyBindingChange(current, change));
         });
@@ -241,7 +270,8 @@ export default function Home() {
                             // 获取状态机的输入
                             const inputs = newRiveAnimation.stateMachineInputs(firstStateMachine);
                             if (inputs) {
-                                setStateMachineInputs(inputs);
+        setStateMachineInputs(inputs);
+        console.log('[StateMachine] active inputs', inputs);
                                 console.log('Initial state machine inputs:', inputs);
                                 // 播放状态机
                                 newRiveAnimation.play(firstStateMachine);
@@ -283,7 +313,8 @@ export default function Home() {
         }
         riveAnimation?.stop();
         const ctx = canvas.getContext('2d', { alpha: false });
-        ctx!.clearRect(0, 0, canvas.width, canvas.height);
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
     }, [riveAnimation]);
 
     const reset = useCallback(() => {
@@ -331,6 +362,50 @@ export default function Home() {
         }
     }, [riveAnimation]);
 
+    const bindViewModelByName = useCallback((viewModelName: string | null) => {
+        if (!riveAnimation || !viewModelName) {
+            console.warn('[DataBinding] bind aborted - missing riveAnimation or name');
+            return false;
+        }
+        const viewModel = riveAnimation.viewModelByName(viewModelName);
+        if (!viewModel) {
+            console.warn('[DataBinding] viewModel not found', viewModelName);
+            return false;
+        }
+        const instance = viewModel.defaultInstance();
+        if (!instance) {
+            console.warn('[DataBinding] default instance missing for viewModel', viewModelName);
+            return false;
+        }
+        riveAnimation.bindViewModelInstance(instance);
+        setSelectedViewModel(viewModelName);
+        refreshDataBindings();
+        console.log('[DataBinding] bound viewModel', viewModelName);
+        return true;
+    }, [refreshDataBindings, riveAnimation]);
+
+    const bindDefaultViewModel = useCallback(() => {
+        if (!riveAnimation) {
+            console.warn('[DataBinding] bind default aborted - missing riveAnimation');
+            return false;
+        }
+        const defaultViewModel = riveAnimation.defaultViewModel();
+        if (!defaultViewModel) {
+            console.warn('[DataBinding] no default ViewModel defined in file');
+            return false;
+        }
+        const instance = defaultViewModel.defaultInstance();
+        if (!instance) {
+            console.warn('[DataBinding] default ViewModel lacks default instance');
+            return false;
+        }
+        riveAnimation.bindViewModelInstance(instance);
+        setSelectedViewModel(defaultViewModel.name ?? 'Default');
+        refreshDataBindings();
+        console.log('[DataBinding] bound default ViewModel', defaultViewModel.name);
+        return true;
+    }, [refreshDataBindings, riveAnimation]);
+
     const setControllerState = useCallback((state: string) => {
         if (state !== "animations" && state !== "state-machines") return;
 
@@ -370,6 +445,183 @@ export default function Home() {
             setStateMachineInputs(inputs);
         }
     }, [riveAnimation]);
+
+    useEffect(() => {
+        if (!riveAnimation) {
+            setViewModelOptions([]);
+            setSelectedViewModel(null);
+            return;
+        }
+
+        const names: string[] = [];
+        const contents = riveAnimation.contents;
+
+        const defaultViewModel = riveAnimation.defaultViewModel();
+        if (defaultViewModel) {
+            names.push(defaultViewModel.name ?? 'Default');
+        }
+
+        setViewModelOptions(names);
+        console.log('[DataBinding] detected view models', names, contents);
+
+        if (!riveAnimation.viewModelInstance) {
+            if (names.length > 0) {
+                bindViewModelByName(names[0]);
+                return;
+            }
+            bindDefaultViewModel();
+            return;
+        }
+
+        setSelectedViewModel((prev) => {
+            if (prev && names.includes(prev)) {
+                return prev;
+            }
+            return names[0] ?? null;
+        });
+    }, [bindDefaultViewModel, bindViewModelByName, riveAnimation]);
+
+    const handleBindingValueChange = useCallback((node: ViewModelBindingNode, rawValue: PrimitiveBindingValue | string) => {
+        if (!riveAnimation) return;
+        const instance = riveAnimation.viewModelInstance;
+        if (!instance) return;
+
+        if (node.type === DATA_TYPES_ENUM.trigger) {
+            const success = setBindingValueOnInstance(instance, node.path, node.type, null);
+            if (success) {
+                setDataBindings((current) => applyBindingChange(current, {
+                    path: node.path,
+                    type: node.type,
+                    value: Date.now(),
+                }));
+                console.log('[DataBinding] trigger fired', { path: node.path });
+            } else {
+                console.warn('[DataBinding] trigger failed', { path: node.path });
+            }
+            return;
+        }
+
+        let nextValue: PrimitiveBindingValue = rawValue as PrimitiveBindingValue;
+
+        if (node.type === DATA_TYPES_ENUM.color && typeof rawValue === 'string') {
+            const parsed = parseHexColor(rawValue);
+            if (parsed === null) {
+                console.warn('[DataBinding] invalid color hex', rawValue);
+                return;
+            }
+            nextValue = parsed;
+        } else if (node.type === DATA_TYPES_ENUM.number && typeof rawValue === 'string') {
+            const parsedNumber = Number(rawValue);
+            if (Number.isNaN(parsedNumber)) {
+                console.warn('[DataBinding] invalid number input', rawValue);
+                return;
+            }
+            nextValue = parsedNumber;
+        }
+
+        const success = setBindingValueOnInstance(instance, node.path, node.type, nextValue);
+        if (success) {
+            setDataBindings((current) => applyBindingChange(current, {
+                path: node.path,
+                type: node.type,
+                value: nextValue,
+            }));
+            console.log('[DataBinding] value updated', { path: node.path, type: node.type, value: nextValue });
+        } else {
+            console.warn('[DataBinding] failed to update value', { path: node.path, type: node.type, rawValue });
+        }
+    }, [riveAnimation]);
+
+    const renderBindingInput = (node: ViewModelBindingNode) => {
+        switch (node.type) {
+            case DATA_TYPES_ENUM.string:
+                return (
+                    <Input
+                        className="w-40"
+                        value={typeof node.value === 'string' ? node.value : ''}
+                        onChange={(e) => handleBindingValueChange(node, e.target.value)}
+                    />
+                );
+            case DATA_TYPES_ENUM.number:
+                return (
+                    <Input
+                        className="w-32"
+                        type="number"
+                        value={typeof node.value === 'number' ? String(node.value) : ''}
+                        onChange={(e) => handleBindingValueChange(node, e.target.value)}
+                    />
+                );
+            case DATA_TYPES_ENUM.boolean:
+                return (
+                    <Switch
+                        checked={Boolean(node.value)}
+                        onCheckedChange={(checked) => handleBindingValueChange(node, checked)}
+                    />
+                );
+            case DATA_TYPES_ENUM.color:
+                return (
+                    <Input
+                        type="color"
+                        className="w-16 h-8 p-1"
+                        value={formatColorHex(node.value ?? null)}
+                        onChange={(e) => handleBindingValueChange(node, e.target.value)}
+                    />
+                );
+            case DATA_TYPES_ENUM.enumType:
+                return (
+                    <Select
+                        value={typeof node.value === 'string' ? node.value : undefined}
+                        onValueChange={(val) => handleBindingValueChange(node, val)}
+                    >
+                        <SelectTrigger className="w-40">
+                            <SelectValue placeholder="选择值" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {node.enumValues?.map((option) => (
+                                <SelectItem key={option} value={option}>
+                                    {option}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                );
+            case DATA_TYPES_ENUM.trigger:
+                return (
+                    <Button size="xs" variant="outline" onClick={() => handleBindingValueChange(node, null)}>
+                        触发
+                    </Button>
+                );
+            default:
+                return null;
+        }
+    };
+
+    const renderBindingTree = (nodes: ViewModelBindingNode[], depth = 0) => {
+        return nodes.map((node) => {
+            const hasChildren = node.children && node.children.length > 0;
+            const isEditable = isPrimitiveType(node.type);
+            return (
+                <div key={node.path} className="flex flex-col gap-2">
+                    <div className="flex w-full items-center gap-2" style={{ paddingLeft: `${depth * 12}px` }}>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate" title={node.name}>{node.name}</p>
+                            <p className="text-xs text-muted-foreground break-all">{node.path}</p>
+                        </div>
+                        {isEditable ? (
+                            renderBindingInput(node)
+                        ) : (
+                            <span className="text-xs text-muted-foreground">分组</span>
+                        )}
+                    </div>
+                    {hasChildren && (
+                        <div className="flex flex-col gap-2">
+                            {renderBindingTree(node.children!, depth + 1)}
+                        </div>
+                    )}
+                </div>
+            );
+        });
+    };
 
     const handleRiveLoad = useCallback(() => {
         getStateMachineList();
@@ -625,6 +877,58 @@ export default function Home() {
                                     </>
                                 )}
                             </div>
+                            {dataBindings.length > 0 && (
+                                <div className="w-full mt-4 flex flex-col gap-2">
+                                    <Separator className="my-2" />
+                                    <div className="flex flex-col w-full gap-1">
+                                        <h4 className="text-sm font-semibold">数据绑定</h4>
+                                        <p className="text-xs text-muted-foreground">实时调整 ViewModel 的数据源。</p>
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                        <Label className="text-xs text-muted-foreground">ViewModel</Label>
+                        {viewModelOptions.length > 0 ? (
+                            <Select
+                                value={selectedViewModel ?? viewModelOptions[0]}
+                                onValueChange={(value) => bindViewModelByName(value)}
+                            >
+                                <SelectTrigger className="w-full">
+                                    <SelectValue placeholder="选择 ViewModel" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {viewModelOptions.map((option) => (
+                                        <SelectItem key={option} value={option}>
+                                            {option}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        ) : (
+                            <div className="flex gap-2 w-full">
+                                <Input
+                                    placeholder="输入 ViewModel 名称"
+                                    value={manualViewModelInput}
+                                    onChange={(e) => setManualViewModelInput(e.target.value)}
+                                />
+                                <Button
+                                    type="button"
+                                    onClick={() => bindViewModelByName(manualViewModelInput.trim())}
+                                    disabled={!manualViewModelInput.trim()}
+                                >
+                                    绑定
+                                </Button>
+                            </div>
+                        )}
+                        {viewModelOptions.length === 0 && (
+                            <p className="text-xs text-muted-foreground">
+                                文件未提供默认 ViewModel，请在 Rive 中设置 Default Instance 后再试。
+                            </p>
+                        )}
+                    </div>
+                                    <div className="flex flex-col w-full gap-3">
+                                        {renderBindingTree(dataBindings)}
+                                    </div>
+                                </div>
+                            )}
                         </TabsContent>
                     </Tabs>
                     {/* only show the play/pause button if the controller is on animations */}
