@@ -363,23 +363,6 @@ export default function Home() {
         });
     }, [clearCanvas, riveAnimation]);
 
-    const setActiveStateMachine = useCallback((stateMachine: string) => {
-        if (!riveAnimation) return;
-
-        setStateMachineList((prev) => (prev ? {
-            ...prev,
-            active: stateMachine,
-        } : prev));
-
-        riveAnimation.stop();
-        riveAnimation.play(stateMachine);
-        const inputs = riveAnimation.stateMachineInputs(stateMachine);
-        if (inputs) {
-            setStateMachineInputs(inputs);
-            console.log('New state machine inputs:', inputs); // 添加日志
-        }
-    }, [riveAnimation]);
-
     const bindViewModelByName = useCallback((viewModelName: string | null) => {
         if (!riveAnimation || !viewModelName) {
             console.warn('[DataBinding] bind aborted - missing riveAnimation or name');
@@ -423,6 +406,28 @@ export default function Home() {
         console.log('[DataBinding] bound default ViewModel', defaultViewModel.name);
         return true;
     }, [refreshDataBindings, riveAnimation]);
+
+    const setActiveStateMachine = useCallback((stateMachine: string) => {
+        if (!riveAnimation) return;
+        
+        setStateMachineList((prev) => (prev ? {
+            ...prev,
+            active: stateMachine,
+        } : prev));
+
+        riveAnimation.stop();
+        riveAnimation.play(stateMachine);
+        const inputs = riveAnimation.stateMachineInputs(stateMachine);
+        if (inputs) {
+            setStateMachineInputs(inputs);
+            console.log('New state machine inputs:', inputs); // 添加日志
+        }
+        if (selectedViewModel) {
+            bindViewModelByName(selectedViewModel);
+        } else {
+            bindDefaultViewModel();
+        }
+    }, [bindDefaultViewModel, bindViewModelByName, riveAnimation, selectedViewModel]);
 
     const setControllerState = useCallback((state: string) => {
         if (state !== "animations" && state !== "state-machines") return;
@@ -703,6 +708,30 @@ export default function Home() {
             if (status.current === PlayerState.Active && !stateMachineList) { getStateMachineList(); }
         }
     }, [status, animationList, getAnimationList, getStateMachineList, reset, stateMachineList]);
+
+    const lastActivatedStateMachine = useRef<string | null>(null);
+    const lastActivatedAnimation = useRef<string | null>(null);
+
+    useEffect(() => {
+        lastActivatedStateMachine.current = null;
+        lastActivatedAnimation.current = null;
+    }, [filename]);
+
+    useEffect(() => {
+        if (controller.active === "state-machines" && stateMachineList) {
+            const target = stateMachineList.active;
+            if (lastActivatedStateMachine.current !== target) {
+                lastActivatedStateMachine.current = target;
+                setActiveStateMachine(target);
+            }
+        } else if (controller.active === "animations" && animationList) {
+            const target = animationList.active;
+            if (lastActivatedAnimation.current !== target) {
+                lastActivatedAnimation.current = target;
+                setActiveAnimation(target);
+            }
+        }
+    }, [animationList, controller.active, setActiveAnimation, setActiveStateMachine, stateMachineList]);
 
     const getFitValue = (alignFitIndex: AlignFitIndex) => {
         return Fit[fitValues[alignFitIndex.fit]];
