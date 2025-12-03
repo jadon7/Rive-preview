@@ -141,6 +141,7 @@ export default function Home() {
 
     const [status, setStatus] = useState<Status>({ current: PlayerState.Idle, hovering: false });
     const [filename, setFilename] = useState<string | null>(null);
+    const [fileVersion, setFileVersion] = useState<number>(0);
     const [fileSize, setFileSize] = useState<string | null>(null);
     const [riveAnimation, setRiveAnimation] = useState<Rive | null>(null);
     const [animationList, setAnimationList] = useState<RiveAnimations | null>(null);
@@ -255,6 +256,12 @@ export default function Home() {
         if (!buffer) return;
 
         setStatus({ current: PlayerState.Loading });
+        viewModelWatcherRef.current?.();
+        viewModelWatcherRef.current = null;
+        setDataBindings([]);
+        dataBindingsRef.current = [];
+        setViewModelOptions([]);
+        setSelectedViewModel(null);
 
         try {
             if (riveAnimation) {
@@ -307,6 +314,7 @@ export default function Home() {
 
     const load = async (file: File) => {
         setFilename(file.name);
+        setFileVersion((prev) => prev + 1);
         setFileSize(formatFileSize(file.size));
 
         const reader = new FileReader();
@@ -487,22 +495,36 @@ export default function Home() {
         setViewModelOptions(names);
         console.log('[DataBinding] detected view models', names, contents);
 
-        if (!riveAnimation.viewModelInstance) {
-            if (names.length > 0) {
-                bindViewModelByName(names[0]);
-            } else {
-                bindDefaultViewModel();
+        if (names.length === 0) {
+            viewModelWatcherRef.current?.();
+            viewModelWatcherRef.current = null;
+            setSelectedViewModel(null);
+            setDataBindings([]);
+            try {
+                riveAnimation.bindViewModelInstance(null);
+            } catch (err) {
+                console.warn('[DataBinding] failed to clear ViewModel binding', err);
             }
             return;
         }
 
-        setSelectedViewModel((prev) => {
-            if (prev && names.includes(prev)) {
-                return prev;
+        const resolveSelection = (current: string | null) => {
+            if (current && names.includes(current)) {
+                return current;
             }
             return names[0] ?? null;
-        });
-    }, [bindDefaultViewModel, bindViewModelByName, riveAnimation]);
+        };
+
+        const nextSelection = resolveSelection(selectedViewModel);
+        setSelectedViewModel(nextSelection);
+
+        if (nextSelection) {
+            bindViewModelByName(nextSelection);
+            return;
+        }
+
+        bindDefaultViewModel();
+    }, [bindDefaultViewModel, bindViewModelByName, riveAnimation, selectedViewModel]);
 
     const handleBindingValueChange = useCallback((node: ViewModelBindingNode, rawValue: PrimitiveBindingValue | string) => {
         if (!riveAnimation) return;
@@ -715,7 +737,7 @@ export default function Home() {
     useEffect(() => {
         lastActivatedStateMachine.current = null;
         lastActivatedAnimation.current = null;
-    }, [filename]);
+    }, [fileVersion]);
 
     useEffect(() => {
         if (controller.active === "state-machines" && stateMachineList) {
