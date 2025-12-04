@@ -40,7 +40,16 @@ export interface BindingChange {
     value: PrimitiveBindingValue;
 }
 
-const primitiveTypes = new Set<DataTypeKey>(['boolean', 'color', 'enumType', 'number', 'string', 'trigger', 'artboard']);
+const primitiveTypes = new Set<DataTypeKey>([
+    'boolean',
+    'color',
+    'enumType',
+    'number',
+    'string',
+    'trigger',
+    'artboard',
+    'image',
+]);
 
 const childTypes = new Set<DataTypeKey>(['list', 'viewModel']);
 
@@ -101,6 +110,9 @@ const traverseBindingTree = (instance: ViewModelInstance, prefix: string): ViewM
             case 'artboard': {
                 return [{ path, name: property.name, type: typeKey, value: null, targetInstance: instance, propertyName: property.name }];
             }
+            case 'image': {
+                return [{ path, name: property.name, type: typeKey, value: null, targetInstance: instance, propertyName: property.name }];
+            }
             case 'viewModel': {
                 const child = instance.viewModel(property.name);
                 return [{ path, name: property.name, type: typeKey, children: child ? traverseBindingTree(child, path) : [] }];
@@ -159,7 +171,7 @@ export const watchViewModelInstance = (
                 return;
             }
             if (primitiveTypes.has(typeKey)) {
-                if (typeKey === 'artboard') {
+                if (typeKey === 'artboard' || typeKey === 'image') {
                     return;
                 }
                 const ref = getPropertyAccessor(scope, property.name, typeKey);
@@ -223,6 +235,8 @@ const getPropertyAccessor = (
             return instance.trigger(propertyName);
         case 'artboard':
             return instance.artboard(propertyName);
+        case 'image':
+            return instance.image(propertyName);
         default:
             return null;
     }
@@ -252,6 +266,7 @@ const readPrimitiveValue = (
         case 'trigger':
             return Date.now();
         case 'artboard':
+        case 'image':
             return null;
         default:
             return null;
@@ -358,6 +373,9 @@ export const setBindingValueOnNode = (
         case 'trigger':
             (bindingAccessor as NonNullable<ReturnType<ViewModelInstance['trigger']>>).trigger();
             return true;
+        case 'image':
+            console.warn('[DataBinding] image bindings require custom handler');
+            return false;
         default:
             return false;
     }

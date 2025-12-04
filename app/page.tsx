@@ -2,6 +2,7 @@
 
 import { DragEvent, useState, useRef, useEffect, useCallback } from 'react';
 import { Rive, Layout, EventType, Fit, Alignment, StateMachineInputType, StateMachineInput } from '@rive-app/react-webgl2';
+import { decodeImage, type Image } from '@rive-app/webgl2';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue, } from "@/components/ui/select"
@@ -140,6 +141,7 @@ export default function Home() {
     const inputRef = useRef<HTMLInputElement>(null);
     const viewModelWatcherRef = useRef<null | (() => void)>(null);
     const dataBindingsRef = useRef<ViewModelBindingNode[]>([]);
+    const imageResourcesRef = useRef<Record<string, { image: Image | null; label: string | null }>>({});
 
     const [status, setStatus] = useState<Status>({ current: PlayerState.Idle, hovering: false });
     const [filename, setFilename] = useState<string | null>(null);
@@ -165,6 +167,38 @@ export default function Home() {
     const [manualViewModelInput, setManualViewModelInput] = useState<string>('');
     const [artboardOptions, setArtboardOptions] = useState<string[]>([]);
 
+    const cleanupImageResources = useCallback(() => {
+        Object.values(imageResourcesRef.current).forEach((entry) => {
+            entry?.image?.unref?.();
+        });
+        imageResourcesRef.current = {};
+    }, []);
+
+    const applyImageLabelsToTree = useCallback((nodes: ViewModelBindingNode[]): ViewModelBindingNode[] => {
+        const patchNodes = (list: ViewModelBindingNode[]): ViewModelBindingNode[] => {
+            return list.map((node) => {
+                let updatedNode = node;
+                if (node.type === 'image') {
+                    const storedLabel = imageResourcesRef.current[node.path]?.label ?? null;
+                    if (storedLabel !== (typeof node.value === 'string' ? node.value : null)) {
+                        updatedNode = { ...node, value: storedLabel };
+                    }
+                }
+                if (node.children && node.children.length > 0) {
+                    const patchedChildren = patchNodes(node.children);
+                    if (patchedChildren !== node.children) {
+                        updatedNode = updatedNode === node
+                            ? { ...node, children: patchedChildren }
+                            : { ...updatedNode, children: patchedChildren };
+                    }
+                }
+                return updatedNode;
+            });
+        };
+
+        return patchNodes(nodes);
+    }, []);
+
     const refreshDataBindings = useCallback(() => {
         viewModelWatcherRef.current?.();
         viewModelWatcherRef.current = null;
@@ -182,7 +216,7 @@ export default function Home() {
             return;
         }
 
-        const tree = buildBindingTree(instance);
+        const tree = applyImageLabelsToTree(buildBindingTree(instance));
         if (tree.length === 0) {
             console.warn('[DataBinding] bound view model has no exposed properties', {
                 properties: instance.properties?.map((property) => ({ name: property.name, type: property.type })),
@@ -194,7 +228,7 @@ export default function Home() {
         viewModelWatcherRef.current = watchViewModelInstance(instance, (change) => {
             setDataBindings((current) => applyBindingChange(current, change));
         });
-    }, [riveAnimation, selectedViewModel]);
+    }, [applyImageLabelsToTree, riveAnimation, selectedViewModel]);
 
     useEffect(() => {
         dataBindingsRef.current = dataBindings;
@@ -206,6 +240,12 @@ export default function Home() {
             viewModelWatcherRef.current = null;
         };
     }, []);
+
+    useEffect(() => {
+        return () => {
+            cleanupImageResources();
+        };
+    }, [cleanupImageResources]);
     useEffect(() => {
         if (riveAnimation) {
             riveAnimation.layout = new Layout({
@@ -259,6 +299,7 @@ export default function Home() {
         if (!buffer) return;
 
         setStatus({ current: PlayerState.Loading });
+        cleanupImageResources();
         viewModelWatcherRef.current?.();
         viewModelWatcherRef.current = null;
         setDataBindings([]);
@@ -358,8 +399,9 @@ export default function Home() {
         setDataBindings([]);
         dataBindingsRef.current = [];
         setArtboardOptions([]);
+        cleanupImageResources();
         clearCanvas();
-    }, [clearCanvas]);
+    }, [cleanupImageResources, clearCanvas]);
 
     const setActiveAnimation = useCallback((animation: string) => {
         if (!riveAnimation) return;
@@ -585,6 +627,71 @@ export default function Home() {
         return true;
     }, [riveAnimation]);
 
+    const setImageResourceEntry = useCallback((path: string, image: Image | null, label: string | null) => {
+        const existing = imageResourcesRef.current[path];
+        if (existing?.image && existing.image !== image) {
+            existing.image.unref?.();
+        }
+
+        if (!image && !label) {
+            delete imageResourcesRef.current[path];
+            return;
+        }
+
+        imageResourcesRef.current[path] = { image, label };
+    }, []);
+
+    const handleImageFileChange = useCallback(async (node: ViewModelBindingNode, file: File | null) => {
+        if (!riveAnimation) {
+            console.warn('[DataBinding] image update skipped - missing riveAnimation');
+            return;
+        }
+
+        if (!node.targetInstance || !node.propertyName) {
+            console.warn('[DataBinding] image node missing target', node);
+            return;
+        }
+
+        const accessor = node.targetInstance.image(node.propertyName);
+        if (!accessor) {
+            console.warn('[DataBinding] image accessor missing', node.path);
+            return;
+        }
+
+        if (!file) {
+            accessor.value = null;
+            setImageResourceEntry(node.path, null, null);
+            setDataBindings((current) =>
+                applyBindingChange(current, {
+                    path: node.path,
+                    type: node.type,
+                    value: null,
+                }),
+            );
+            console.log('[DataBinding] image cleared', { path: node.path });
+            return;
+        }
+
+        try {
+            const buffer = await file.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            const decoded = await decodeImage(bytes);
+
+            accessor.value = decoded;
+            setImageResourceEntry(node.path, decoded, file.name);
+            setDataBindings((current) =>
+                applyBindingChange(current, {
+                    path: node.path,
+                    type: node.type,
+                    value: file.name,
+                }),
+            );
+            console.log('[DataBinding] image updated', { path: node.path, file: file.name });
+        } catch (err) {
+            console.error('[DataBinding] failed to decode image', err);
+        }
+    }, [riveAnimation, setImageResourceEntry]);
+
     const handleBindingValueChange = useCallback((node: ViewModelBindingNode, rawValue: PrimitiveBindingValue | string) => {
         if (!riveAnimation) return;
         const instance = riveAnimation.viewModelInstance;
@@ -601,6 +708,11 @@ export default function Home() {
             if (!success) {
                 console.warn('[DataBinding] failed to update artboard', { path: node.path, rawValue });
             }
+            return;
+        }
+
+        if (node.type === 'image') {
+            console.warn('[DataBinding] image updates must use file input handler');
             return;
         }
 
@@ -727,6 +839,36 @@ export default function Home() {
                             ))}
                         </SelectContent>
                     </Select>
+                );
+            case 'image':
+                return (
+                    <div className="flex items-center gap-2">
+                        <Input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,image/avif"
+                            className="w-48"
+                            onChange={(e) => {
+                                const file = e.target.files?.[0] ?? null;
+                                if (file) {
+                                    handleImageFileChange(node, file);
+                                }
+                                e.target.value = '';
+                            }}
+                        />
+                        {typeof node.value === 'string' && node.value && (
+                            <span className="text-xs text-muted-foreground truncate max-w-[96px]" title={node.value}>
+                                {node.value}
+                            </span>
+                        )}
+                        <Button
+                            size="xs"
+                            variant="outline"
+                            onClick={() => handleImageFileChange(node, null)}
+                            disabled={!node.value}
+                        >
+                            清空
+                        </Button>
+                    </div>
                 );
             default:
                 return null;
