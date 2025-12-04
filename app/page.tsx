@@ -965,7 +965,7 @@ export default function Home() {
                             value={imageResourcesRef.current[node.path]?.selectValue ?? IMAGE_CLEAR_VALUE}
                             onValueChange={(val) => handleImageSelectChange(node, val)}
                         >
-                            <SelectTrigger className="w-56">
+                            <SelectTrigger className="w-44">
                                 <SelectValue placeholder={imageAssetOptions.length > 0 ? "选择图片" : "未检测到图片"} />
                             </SelectTrigger>
                             <SelectContent>
