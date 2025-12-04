@@ -88,6 +88,8 @@ const alignValues: (keyof typeof Alignment)[] = [
     'BottomRight',
 ];
 
+const ARTBOARD_CLEAR_VALUE = '__artboard_clear__';
+
 enum PlayerState {
     Idle,
     Loading,
@@ -161,6 +163,7 @@ export default function Home() {
     const [viewModelOptions, setViewModelOptions] = useState<string[]>([]);
     const [selectedViewModel, setSelectedViewModel] = useState<string | null>(null);
     const [manualViewModelInput, setManualViewModelInput] = useState<string>('');
+    const [artboardOptions, setArtboardOptions] = useState<string[]>([]);
 
     const refreshDataBindings = useCallback(() => {
         viewModelWatcherRef.current?.();
@@ -354,6 +357,7 @@ export default function Home() {
         viewModelWatcherRef.current = null;
         setDataBindings([]);
         dataBindingsRef.current = [];
+        setArtboardOptions([]);
         clearCanvas();
     }, [clearCanvas]);
 
@@ -526,6 +530,61 @@ export default function Home() {
         bindDefaultViewModel();
     }, [bindDefaultViewModel, bindViewModelByName, riveAnimation, selectedViewModel]);
 
+    const updateArtboardOptions = useCallback(() => {
+        if (!riveAnimation) {
+            setArtboardOptions([]);
+            return;
+        }
+
+        const contents = riveAnimation.contents;
+        const names =
+            contents?.artboards
+                ?.map((artboard) => artboard?.name)
+                .filter((name): name is string => typeof name === 'string' && name.length > 0) ?? [];
+
+        setArtboardOptions(names);
+    }, [riveAnimation]);
+
+    const setArtboardBindingValue = useCallback((node: ViewModelBindingNode, artboardName: string | null) => {
+        if (!riveAnimation) {
+            console.warn('[DataBinding] artboard update skipped - missing riveAnimation');
+            return false;
+        }
+
+        if (!node.targetInstance || !node.propertyName) {
+            console.warn('[DataBinding] artboard node missing target', node);
+            return false;
+        }
+
+        const accessor = node.targetInstance.artboard(node.propertyName);
+        if (!accessor) {
+            console.warn('[DataBinding] artboard accessor missing', node.path);
+            return false;
+        }
+
+        if (artboardName) {
+            const bindableArtboard = riveAnimation.getBindableArtboard(artboardName);
+            if (!bindableArtboard) {
+                console.warn('[DataBinding] target artboard not found', artboardName);
+                return false;
+            }
+            accessor.value = bindableArtboard;
+        } else {
+            accessor.value = null;
+        }
+
+        setDataBindings((current) =>
+            applyBindingChange(current, {
+                path: node.path,
+                type: node.type,
+                value: artboardName ?? null,
+            }),
+        );
+
+        console.log('[DataBinding] artboard updated', { path: node.path, value: artboardName ?? 'none' });
+        return true;
+    }, [riveAnimation]);
+
     const handleBindingValueChange = useCallback((node: ViewModelBindingNode, rawValue: PrimitiveBindingValue | string) => {
         if (!riveAnimation) return;
         const instance = riveAnimation.viewModelInstance;
@@ -533,6 +592,15 @@ export default function Home() {
 
         if (!node.targetInstance || !node.propertyName) {
             console.warn('[DataBinding] node missing target', node);
+            return;
+        }
+
+        if (node.type === 'artboard') {
+            const nextName = typeof rawValue === 'string' && rawValue !== ARTBOARD_CLEAR_VALUE ? rawValue : null;
+            const success = setArtboardBindingValue(node, nextName);
+            if (!success) {
+                console.warn('[DataBinding] failed to update artboard', { path: node.path, rawValue });
+            }
             return;
         }
 
@@ -580,7 +648,7 @@ export default function Home() {
         } else {
             console.warn('[DataBinding] failed to update value', { path: node.path, type: node.type, rawValue });
         }
-    }, [riveAnimation]);
+    }, [riveAnimation, setArtboardBindingValue]);
 
     const renderBindingInput = (node: ViewModelBindingNode) => {
         switch (node.type) {
@@ -641,6 +709,25 @@ export default function Home() {
                         触发
                     </Button>
                 );
+            case 'artboard':
+                return (
+                    <Select
+                        value={typeof node.value === 'string' ? node.value : ARTBOARD_CLEAR_VALUE}
+                        onValueChange={(val) => handleBindingValueChange(node, val)}
+                    >
+                        <SelectTrigger className="w-48">
+                            <SelectValue placeholder={artboardOptions.length > 0 ? "选择 Artboard" : "未检测到 Artboard"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value={ARTBOARD_CLEAR_VALUE}>未绑定</SelectItem>
+                            {artboardOptions.map((option) => (
+                                <SelectItem key={option} value={option}>
+                                    {option}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                );
             default:
                 return null;
         }
@@ -679,6 +766,7 @@ export default function Home() {
         setControllerState("state-machines");
         refreshDataBindings();
         updateViewModelOptions();
+        updateArtboardOptions();
 
         if (riveAnimation) {
             const stateMachines = riveAnimation.stateMachineNames;
@@ -693,7 +781,7 @@ export default function Home() {
                 }
             }
         }
-    }, [getAnimationList, getStateMachineList, refreshDataBindings, riveAnimation, setControllerState, updateViewModelOptions]);
+    }, [getAnimationList, getStateMachineList, refreshDataBindings, riveAnimation, setControllerState, updateArtboardOptions, updateViewModelOptions]);
 
     useEffect(() => {
         if (!riveAnimation) return;

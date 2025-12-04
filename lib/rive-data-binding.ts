@@ -15,6 +15,8 @@ const DATA_TYPES = {
     enumType: 6,
     trigger: 7,
     viewModel: 8,
+    image: 9,
+    artboard: 10,
 } as const;
 
 type DataTypeKey = keyof typeof DATA_TYPES;
@@ -38,7 +40,7 @@ export interface BindingChange {
     value: PrimitiveBindingValue;
 }
 
-const primitiveTypes = new Set<DataTypeKey>(['boolean', 'color', 'enumType', 'number', 'string', 'trigger']);
+const primitiveTypes = new Set<DataTypeKey>(['boolean', 'color', 'enumType', 'number', 'string', 'trigger', 'artboard']);
 
 const childTypes = new Set<DataTypeKey>(['list', 'viewModel']);
 
@@ -94,6 +96,9 @@ const traverseBindingTree = (instance: ViewModelInstance, prefix: string): ViewM
                 return [{ path, name: property.name, type: typeKey, value: ref?.value ?? null, enumValues: ref?.values ?? [], targetInstance: instance, propertyName: property.name }];
             }
             case 'trigger': {
+                return [{ path, name: property.name, type: typeKey, value: null, targetInstance: instance, propertyName: property.name }];
+            }
+            case 'artboard': {
                 return [{ path, name: property.name, type: typeKey, value: null, targetInstance: instance, propertyName: property.name }];
             }
             case 'viewModel': {
@@ -154,6 +159,9 @@ export const watchViewModelInstance = (
                 return;
             }
             if (primitiveTypes.has(typeKey)) {
+                if (typeKey === 'artboard') {
+                    return;
+                }
                 const ref = getPropertyAccessor(scope, property.name, typeKey);
                 if (!ref) return;
                 const handler = () => {
@@ -213,6 +221,8 @@ const getPropertyAccessor = (
             return instance.enum(propertyName);
         case 'trigger':
             return instance.trigger(propertyName);
+        case 'artboard':
+            return instance.artboard(propertyName);
         default:
             return null;
     }
@@ -241,6 +251,8 @@ const readPrimitiveValue = (
             return (accessor as ReturnType<ViewModelInstance['boolean']>)?.value ?? null;
         case 'trigger':
             return Date.now();
+        case 'artboard':
+            return null;
         default:
             return null;
     }
