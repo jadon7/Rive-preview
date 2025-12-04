@@ -2,7 +2,7 @@
 
 import { DragEvent, useState, useRef, useEffect, useCallback } from 'react';
 import { Rive, Layout, EventType, Fit, Alignment, StateMachineInputType, StateMachineInput } from '@rive-app/react-webgl2';
-import { decodeImage, type Image } from '@rive-app/webgl2';
+import { decodeImage, type Image, type AssetLoadCallback } from '@rive-app/webgl2';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue, } from "@/components/ui/select"
@@ -90,6 +90,9 @@ const alignValues: (keyof typeof Alignment)[] = [
 ];
 
 const ARTBOARD_CLEAR_VALUE = '__artboard_clear__';
+const IMAGE_CLEAR_VALUE = '__image_clear__';
+const IMAGE_UPLOAD_VALUE = '__image_upload__';
+const IMAGE_CUSTOM_PREFIX = '__image_custom__';
 
 enum PlayerState {
     Idle,
@@ -141,7 +144,9 @@ export default function Home() {
     const inputRef = useRef<HTMLInputElement>(null);
     const viewModelWatcherRef = useRef<null | (() => void)>(null);
     const dataBindingsRef = useRef<ViewModelBindingNode[]>([]);
-    const imageResourcesRef = useRef<Record<string, { image: Image | null; label: string | null }>>({});
+    const imageResourcesRef = useRef<Record<string, { image: Image | null; label: string | null; assetKey: string | null; selectValue: string }>>({});
+    const imageAssetCacheRef = useRef<Record<string, { bytes: Uint8Array; label: string; image?: Image | null }>>({});
+    const imageUploadInputsRef = useRef<Record<string, HTMLInputElement | null>>({});
 
     const [status, setStatus] = useState<Status>({ current: PlayerState.Idle, hovering: false });
     const [filename, setFilename] = useState<string | null>(null);
@@ -166,12 +171,21 @@ export default function Home() {
     const [selectedViewModel, setSelectedViewModel] = useState<string | null>(null);
     const [manualViewModelInput, setManualViewModelInput] = useState<string>('');
     const [artboardOptions, setArtboardOptions] = useState<string[]>([]);
+    const [imageAssetOptions, setImageAssetOptions] = useState<Array<{ id: string; label: string }>>([]);
 
     const cleanupImageResources = useCallback(() => {
         Object.values(imageResourcesRef.current).forEach((entry) => {
             entry?.image?.unref?.();
         });
         imageResourcesRef.current = {};
+    }, []);
+
+    const cleanupImageAssets = useCallback(() => {
+        Object.values(imageAssetCacheRef.current).forEach((entry) => {
+            entry?.image?.unref?.();
+        });
+        imageAssetCacheRef.current = {};
+        setImageAssetOptions([]);
     }, []);
 
     const applyImageLabelsToTree = useCallback((nodes: ViewModelBindingNode[]): ViewModelBindingNode[] => {
@@ -197,6 +211,14 @@ export default function Home() {
         };
 
         return patchNodes(nodes);
+    }, []);
+
+    const updateImageAssetOptions = useCallback(() => {
+        const options = Object.entries(imageAssetCacheRef.current).map(([id, entry]) => ({
+            id,
+            label: entry.label,
+        }));
+        setImageAssetOptions(options);
     }, []);
 
     const refreshDataBindings = useCallback(() => {
@@ -247,6 +269,11 @@ export default function Home() {
         };
     }, [cleanupImageResources]);
     useEffect(() => {
+        return () => {
+            cleanupImageAssets();
+        };
+    }, [cleanupImageAssets]);
+    useEffect(() => {
         if (riveAnimation) {
             riveAnimation.layout = new Layout({
                 fit: getFitValue(alignFitIndex),
@@ -295,11 +322,31 @@ export default function Home() {
         }
     };
 
+    const handleRiveAssetLoad = useCallback<AssetLoadCallback>((asset, bytes) => {
+        try {
+            if (asset.isImage) {
+                const key = asset.uniqueFilename || asset.name || `image_${Object.keys(imageAssetCacheRef.current).length + 1}`;
+                const copy = bytes.slice ? bytes.slice() : new Uint8Array(bytes);
+                imageAssetCacheRef.current[key] = {
+                    bytes: copy,
+                    label: asset.name || asset.uniqueFilename || key,
+                    image: null,
+                };
+            }
+            asset.decode(bytes);
+            return true;
+        } catch (err) {
+            console.error('[DataBinding] asset loader failed', err);
+            return false;
+        }
+    }, []);
+
     const setAnimationWithBuffer = async (buffer: string | ArrayBuffer | null) => {
         if (!buffer) return;
 
         setStatus({ current: PlayerState.Loading });
         cleanupImageResources();
+        cleanupImageAssets();
         viewModelWatcherRef.current?.();
         viewModelWatcherRef.current = null;
         setDataBindings([]);
@@ -308,15 +355,7 @@ export default function Home() {
         setSelectedViewModel(null);
 
         try {
-            if (riveAnimation) {
-                await riveAnimation.load({
-                    buffer: buffer as ArrayBuffer,
-                    autoplay: false,
-                    autoBind: true,
-                });
-                return;
-            }
-
+            riveAnimation?.cleanup();
             const newRiveAnimation = new Rive({
                 buffer: buffer as ArrayBuffer,
                 canvas: canvasRef.current!,
@@ -327,6 +366,7 @@ export default function Home() {
                     fit: getFitValue(alignFitIndex),
                     alignment: getAlignmentValue(alignFitIndex),
                 }),
+                assetLoader: handleRiveAssetLoad,
                 onLoad: () => {
                     // 先设置状态为 Active
                     setStatus({ current: PlayerState.Active });
@@ -400,8 +440,9 @@ export default function Home() {
         dataBindingsRef.current = [];
         setArtboardOptions([]);
         cleanupImageResources();
+        cleanupImageAssets();
         clearCanvas();
-    }, [cleanupImageResources, clearCanvas]);
+    }, [cleanupImageAssets, cleanupImageResources, clearCanvas]);
 
     const setActiveAnimation = useCallback((animation: string) => {
         if (!riveAnimation) return;
@@ -627,19 +668,72 @@ export default function Home() {
         return true;
     }, [riveAnimation]);
 
-    const setImageResourceEntry = useCallback((path: string, image: Image | null, label: string | null) => {
+    const setImageResourceEntry = useCallback((path: string, image: Image | null, label: string | null, assetKey: string | null, selectValue: string) => {
         const existing = imageResourcesRef.current[path];
         if (existing?.image && existing.image !== image) {
             existing.image.unref?.();
         }
 
-        if (!image && !label) {
+        if (!image && !label && !assetKey) {
             delete imageResourcesRef.current[path];
             return;
         }
 
-        imageResourcesRef.current[path] = { image, label };
+        imageResourcesRef.current[path] = { image, label, assetKey, selectValue };
     }, []);
+
+    const handleImageSelection = useCallback(async (node: ViewModelBindingNode, assetKey: string | null) => {
+        if (!riveAnimation) {
+            console.warn('[DataBinding] image selection skipped - missing riveAnimation');
+            return;
+        }
+
+        if (!node.targetInstance || !node.propertyName) {
+            console.warn('[DataBinding] image node missing target', node);
+            return;
+        }
+
+        const accessor = node.targetInstance.image(node.propertyName);
+        if (!accessor) {
+            console.warn('[DataBinding] image accessor missing', node.path);
+            return;
+        }
+
+        if (!assetKey) {
+            accessor.value = null;
+            setImageResourceEntry(node.path, null, null, null, IMAGE_CLEAR_VALUE);
+            setDataBindings((current) =>
+                applyBindingChange(current, {
+                    path: node.path,
+                    type: node.type,
+                    value: null,
+                }),
+            );
+            console.log('[DataBinding] image cleared', { path: node.path });
+            return;
+        }
+
+        const assetEntry = imageAssetCacheRef.current[assetKey];
+        if (!assetEntry) {
+            console.warn('[DataBinding] asset not found for image binding', assetKey);
+            return;
+        }
+
+        if (!assetEntry.image) {
+            assetEntry.image = await decodeImage(assetEntry.bytes);
+        }
+
+        accessor.value = assetEntry.image;
+        setImageResourceEntry(node.path, assetEntry.image, assetEntry.label, assetKey, assetKey);
+        setDataBindings((current) =>
+            applyBindingChange(current, {
+                path: node.path,
+                type: node.type,
+                value: assetEntry.label,
+            }),
+        );
+        console.log('[DataBinding] image updated', { path: node.path, assetKey });
+    }, [riveAnimation, setImageResourceEntry]);
 
     const handleImageFileChange = useCallback(async (node: ViewModelBindingNode, file: File | null) => {
         if (!riveAnimation) {
@@ -660,7 +754,7 @@ export default function Home() {
 
         if (!file) {
             accessor.value = null;
-            setImageResourceEntry(node.path, null, null);
+            setImageResourceEntry(node.path, null, null, null, IMAGE_CLEAR_VALUE);
             setDataBindings((current) =>
                 applyBindingChange(current, {
                     path: node.path,
@@ -678,7 +772,7 @@ export default function Home() {
             const decoded = await decodeImage(bytes);
 
             accessor.value = decoded;
-            setImageResourceEntry(node.path, decoded, file.name);
+            setImageResourceEntry(node.path, decoded, file.name, null, `${IMAGE_CUSTOM_PREFIX}${node.path}`);
             setDataBindings((current) =>
                 applyBindingChange(current, {
                     path: node.path,
@@ -691,6 +785,30 @@ export default function Home() {
             console.error('[DataBinding] failed to decode image', err);
         }
     }, [riveAnimation, setImageResourceEntry]);
+
+    const triggerImageUpload = useCallback((path: string) => {
+        const input = imageUploadInputsRef.current[path];
+        if (input) {
+            input.click();
+        } else {
+            console.warn('[DataBinding] image upload input missing', path);
+        }
+    }, []);
+
+    const handleImageSelectChange = useCallback((node: ViewModelBindingNode, value: string) => {
+        if (value === IMAGE_UPLOAD_VALUE) {
+            triggerImageUpload(node.path);
+            return;
+        }
+        if (value === IMAGE_CLEAR_VALUE) {
+            handleImageSelection(node, null);
+            return;
+        }
+        if (value.startsWith(IMAGE_CUSTOM_PREFIX)) {
+            return;
+        }
+        handleImageSelection(node, value);
+    }, [handleImageSelection, triggerImageUpload]);
 
     const handleBindingValueChange = useCallback((node: ViewModelBindingNode, rawValue: PrimitiveBindingValue | string) => {
         if (!riveAnimation) return;
@@ -843,31 +961,46 @@ export default function Home() {
             case 'image':
                 return (
                     <div className="flex items-center gap-2">
-                        <Input
+                        <Select
+                            value={imageResourcesRef.current[node.path]?.selectValue ?? IMAGE_CLEAR_VALUE}
+                            onValueChange={(val) => handleImageSelectChange(node, val)}
+                        >
+                            <SelectTrigger className="w-56">
+                                <SelectValue placeholder={imageAssetOptions.length > 0 ? "选择图片" : "未检测到图片"} />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value={IMAGE_CLEAR_VALUE}>未绑定</SelectItem>
+                                {imageAssetOptions.map((option) => (
+                                    <SelectItem key={option.id} value={option.id}>
+                                        {option.label}
+                                    </SelectItem>
+                                ))}
+                                {imageResourcesRef.current[node.path]?.label && !imageResourcesRef.current[node.path]?.assetKey && (
+                                    <SelectItem value={imageResourcesRef.current[node.path]!.selectValue}>
+                                        自定义: {imageResourcesRef.current[node.path]!.label}
+                                    </SelectItem>
+                                )}
+                                <SelectItem value={IMAGE_UPLOAD_VALUE}>上传图片…</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <input
                             type="file"
                             accept="image/png,image/jpeg,image/webp,image/avif"
-                            className="w-48"
+                            className="hidden"
+                            ref={(el) => {
+                                imageUploadInputsRef.current[node.path] = el;
+                            }}
                             onChange={(e) => {
                                 const file = e.target.files?.[0] ?? null;
-                                if (file) {
-                                    handleImageFileChange(node, file);
-                                }
+                                handleImageFileChange(node, file);
                                 e.target.value = '';
                             }}
                         />
-                        {typeof node.value === 'string' && node.value && (
-                            <span className="text-xs text-muted-foreground truncate max-w-[96px]" title={node.value}>
-                                {node.value}
+                        {imageResourcesRef.current[node.path]?.label && (
+                            <span className="text-xs text-muted-foreground truncate max-w-[96px]" title={imageResourcesRef.current[node.path]?.label ?? undefined}>
+                                {imageResourcesRef.current[node.path]?.label}
                             </span>
                         )}
-                        <Button
-                            size="xs"
-                            variant="outline"
-                            onClick={() => handleImageFileChange(node, null)}
-                            disabled={!node.value}
-                        >
-                            清空
-                        </Button>
                     </div>
                 );
             default:
@@ -909,6 +1042,7 @@ export default function Home() {
         refreshDataBindings();
         updateViewModelOptions();
         updateArtboardOptions();
+        updateImageAssetOptions();
 
         if (riveAnimation) {
             const stateMachines = riveAnimation.stateMachineNames;
@@ -923,7 +1057,7 @@ export default function Home() {
                 }
             }
         }
-    }, [getAnimationList, getStateMachineList, refreshDataBindings, riveAnimation, setControllerState, updateArtboardOptions, updateViewModelOptions]);
+    }, [getAnimationList, getStateMachineList, refreshDataBindings, riveAnimation, setControllerState, updateArtboardOptions, updateImageAssetOptions, updateViewModelOptions]);
 
     useEffect(() => {
         if (!riveAnimation) return;
