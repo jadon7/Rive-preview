@@ -996,11 +996,6 @@ export default function Home() {
                                 e.target.value = '';
                             }}
                         />
-                        {imageResourcesRef.current[node.path]?.label && (
-                            <span className="text-xs text-muted-foreground truncate max-w-[96px]" title={imageResourcesRef.current[node.path]?.label ?? undefined}>
-                                {imageResourcesRef.current[node.path]?.label}
-                            </span>
-                        )}
                     </div>
                 );
             default:
