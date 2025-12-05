@@ -1532,9 +1532,9 @@ export default function Home() {
         <>
             <main className="flex-1">
                 <Toaster richColors visibleToasts={10} />
-                <div id='container' className="px-8 max-w-[1400px] mx-auto">
+                <div id='container' className="px-8 max-w-[1600px] mx-auto">
                     {component_header()}
-                    <div className="grid grid-cols-[1fr_300px] gap-4">
+                    <div className="grid grid-cols-[1fr_500px] gap-4">
                         <div className="flex flex-col gap-4">
                             <Card>
                                 <CardHeader>
