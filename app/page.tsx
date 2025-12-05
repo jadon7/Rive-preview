@@ -169,7 +169,6 @@ export default function Home() {
     const [dataBindings, setDataBindings] = useState<ViewModelBindingNode[]>([]);
     const [viewModelOptions, setViewModelOptions] = useState<string[]>([]);
     const [selectedViewModel, setSelectedViewModel] = useState<string | null>(null);
-    const [manualViewModelInput, setManualViewModelInput] = useState<string>('');
     const [artboardOptions, setArtboardOptions] = useState<string[]>([]);
     const [imageAssetOptions, setImageAssetOptions] = useState<Array<{ id: string; label: string }>>([]);
 
@@ -572,15 +571,28 @@ export default function Home() {
         }
 
         const names: string[] = [];
-        const contents = riveAnimation.contents;
+        const seen = new Set<string>();
+        const viewModelCount = riveAnimation.viewModelCount ?? 0;
+        for (let index = 0; index < viewModelCount; index += 1) {
+            const viewModel = riveAnimation.viewModelByIndex(index);
+            if (!viewModel) continue;
+            const name = viewModel.name ?? '';
+            if (!name || seen.has(name)) continue;
+            seen.add(name);
+            names.push(name);
+        }
 
         const defaultViewModel = riveAnimation.defaultViewModel();
         if (defaultViewModel) {
-            names.push(defaultViewModel.name ?? 'Default');
+            const defaultName = defaultViewModel.name ?? 'Default';
+            if (!seen.has(defaultName)) {
+                names.push(defaultName);
+                seen.add(defaultName);
+            }
         }
 
         setViewModelOptions(names);
-        console.log('[DataBinding] detected view models', names, contents);
+        console.log('[DataBinding] detected view models', names);
 
         if (names.length === 0) {
             viewModelWatcherRef.current?.();
@@ -1316,9 +1328,9 @@ export default function Home() {
                                     <div className="flex flex-col w-full gap-1">
                                         <h4 className="text-lg font-medium mb-2">Data Binding</h4>
                                     </div>
-                                    <div className="flex flex-col gap-1">
-                                        <Label className="text-xs text-muted-foreground">ViewModel</Label>
-                                        {viewModelOptions.length > 0 ? (
+                                    {viewModelOptions.length > 0 && (
+                                        <div className="flex flex-col gap-1">
+                                            <Label className="text-xs text-muted-foreground">ViewModel</Label>
                                             <Select
                                                 value={selectedViewModel ?? viewModelOptions[0]}
                                                 onValueChange={(value) => bindViewModelByName(value)}
@@ -1334,28 +1346,8 @@ export default function Home() {
                                                     ))}
                                                 </SelectContent>
                                             </Select>
-                                        ) : (
-                                            <div className="flex gap-2 w-full">
-                                                <Input
-                                                    placeholder="输入 ViewModel 名称"
-                                                    value={manualViewModelInput}
-                                                    onChange={(e) => setManualViewModelInput(e.target.value)}
-                                                />
-                                                <Button
-                                                    type="button"
-                                                    onClick={() => bindViewModelByName(manualViewModelInput.trim())}
-                                                    disabled={!manualViewModelInput.trim()}
-                                                >
-                                                    绑定
-                                                </Button>
-                                            </div>
-                                        )}
-                                        {viewModelOptions.length === 0 && (
-                                            <p className="text-xs text-muted-foreground">
-                                                文件未提供默认 ViewModel，请在 Rive 中设置 Default Instance 后再试。
-                                            </p>
-                                        )}
-                                    </div>
+                                        </div>
+                                    )}
                                     <div className="flex flex-col w-full gap-3 -mr-6">
                                         {renderBindingTree(dataBindings)}
                                     </div>
