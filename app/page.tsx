@@ -2,7 +2,7 @@
 
 import { DragEvent, useState, useRef, useEffect, useCallback } from 'react';
 import { Rive, Layout, EventType, Fit, Alignment, StateMachineInputType, StateMachineInput } from '@rive-app/react-webgl2';
-import { decodeImage, type Image, type AssetLoadCallback, type ViewModelInstance } from '@rive-app/webgl2';
+import { decodeImage, type Image, type AssetLoadCallback } from '@rive-app/webgl2';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue, } from "@/components/ui/select"
@@ -148,7 +148,6 @@ export default function Home() {
     const imageAssetCacheRef = useRef<Record<string, { bytes: Uint8Array; label: string; image?: Image | null }>>({});
     const imageUploadInputsRef = useRef<Record<string, HTMLInputElement | null>>({});
     const syncViewModelOptionsRef = useRef<(engine: Rive | null) => void>(() => {});
-    const viewModelInstanceCache = useRef<Map<string, ViewModelInstance>>(new Map());
 
     const [status, setStatus] = useState<Status>({ current: PlayerState.Idle, hovering: false });
     const [filename, setFilename] = useState<string | null>(null);
@@ -189,17 +188,6 @@ export default function Home() {
         setImageAssetOptions([]);
     }, []);
 
-    const clearViewModelInstanceCache = useCallback(() => {
-        viewModelInstanceCache.current.forEach((instance) => {
-            try {
-                instance.cleanup?.();
-            } catch (err) {
-                console.warn('[DataBinding] failed to cleanup cached instance', err);
-            }
-        });
-        viewModelInstanceCache.current.clear();
-    }, []);
-
     const applyImageLabelsToTree = useCallback((nodes: ViewModelBindingNode[]): ViewModelBindingNode[] => {
         const patchNodes = (list: ViewModelBindingNode[]): ViewModelBindingNode[] => {
             return list.map((node) => {
@@ -231,24 +219,6 @@ export default function Home() {
             label: entry.label,
         }));
         setImageAssetOptions(options);
-    }, []);
-
-    const getOrCreateViewModelInstance = useCallback((viewModelName: string, engine: Rive | null): ViewModelInstance | null => {
-        if (!engine || !viewModelName) return null;
-        const cached = viewModelInstanceCache.current.get(viewModelName);
-        if (cached) return cached;
-        const viewModel = engine.viewModelByName(viewModelName);
-        if (!viewModel) {
-            console.warn('[DataBinding] viewModel not found during cache lookup', viewModelName);
-            return null;
-        }
-        const instance = viewModel.defaultInstance();
-        if (!instance) {
-            console.warn('[DataBinding] default instance missing for cached viewModel', viewModelName);
-            return null;
-        }
-        viewModelInstanceCache.current.set(viewModelName, instance);
-        return instance;
     }, []);
 
     const refreshDataBindings = useCallback(() => {
@@ -377,7 +347,6 @@ export default function Home() {
         setStatus({ current: PlayerState.Loading });
         cleanupImageResources();
         cleanupImageAssets();
-        clearViewModelInstanceCache();
         viewModelWatcherRef.current?.();
         viewModelWatcherRef.current = null;
         setDataBindings([]);
@@ -473,9 +442,8 @@ export default function Home() {
         setArtboardOptions([]);
         cleanupImageResources();
         cleanupImageAssets();
-        clearViewModelInstanceCache();
         clearCanvas();
-    }, [cleanupImageAssets, cleanupImageResources, clearCanvas, clearViewModelInstanceCache]);
+    }, [cleanupImageAssets, cleanupImageResources, clearCanvas]);
 
     const setActiveAnimation = useCallback((animation: string) => {
         if (!riveAnimation) return;
@@ -497,9 +465,14 @@ export default function Home() {
             console.warn('[DataBinding] bind aborted - missing Rive instance or name');
             return false;
         }
-        const instance = getOrCreateViewModelInstance(viewModelName, target);
+        const viewModel = target.viewModelByName(viewModelName);
+        if (!viewModel) {
+            console.warn('[DataBinding] viewModel not found', viewModelName);
+            return false;
+        }
+        const instance = viewModel.defaultInstance();
         if (!instance) {
-            console.warn('[DataBinding] unable to create ViewModel instance', viewModelName);
+            console.warn('[DataBinding] default instance missing for viewModel', viewModelName);
             return false;
         }
         target.bindViewModelInstance(instance);
@@ -509,7 +482,7 @@ export default function Home() {
         }
         console.log('[DataBinding] bound viewModel', viewModelName);
         return true;
-    }, [getOrCreateViewModelInstance, refreshDataBindings, riveAnimation]);
+    }, [refreshDataBindings, riveAnimation]);
 
     const bindDefaultViewModel = useCallback((engine?: Rive | null) => {
         const target = engine ?? riveAnimation;
@@ -522,22 +495,17 @@ export default function Home() {
             console.warn('[DataBinding] no default ViewModel defined in file');
             return false;
         }
-        const viewModelName = defaultViewModel.name ?? 'Default';
-        let instance = viewModelInstanceCache.current.get(viewModelName);
+        const instance = defaultViewModel.defaultInstance();
         if (!instance) {
-            instance = defaultViewModel.defaultInstance();
-            if (!instance) {
-                console.warn('[DataBinding] default ViewModel lacks default instance');
-                return false;
-            }
-            viewModelInstanceCache.current.set(viewModelName, instance);
+            console.warn('[DataBinding] default ViewModel lacks default instance');
+            return false;
         }
         target.bindViewModelInstance(instance);
-        setSelectedViewModel(viewModelName);
+        setSelectedViewModel(defaultViewModel.name ?? 'Default');
         if (target === riveAnimation) {
             refreshDataBindings();
         }
-        console.log('[DataBinding] bound default ViewModel', viewModelName);
+        console.log('[DataBinding] bound default ViewModel', defaultViewModel.name);
         return true;
     }, [refreshDataBindings, riveAnimation]);
 
